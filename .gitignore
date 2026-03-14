@@ -1,0 +1,14 @@
+# IDE и окружение
+.idea/
+venv/
+__pycache__/
+*.pyc
+
+# Данные пользователей / логи / временные JSON
+user_data.json
+status_data.json
+order_number.json
+payment_data.json
+logs.json
+chat_data.json
+user_agreements.json
