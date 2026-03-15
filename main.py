@@ -1,4 +1,5 @@
 import logging
+import os
 from aiogram.fsm.storage.memory import MemoryStorage
 from openai import OpenAI
 from aiogram.fsm.context import FSMContext
@@ -19,10 +20,10 @@ from yookassa import Configuration, Payment
 import uuid
 import random
 
-#MAKS API_TOKEN = '7260975343:AAHbSsU7bx_C5hv1Xo_gcorEPEbZQFJH6wE'
-#DEMID API_TOKEN = '7412212565:AAH0f-MuSXuPhJjozy5WpAXO8RdyogK6yEc'
-API_TOKEN = '7848066454:AAE4tuucTVdME8qj9skYrM9qqKSYmclhtTU'
-client = OpenAI(api_key='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')
+#MAKS API_TOKEN = '...'
+#DEMID API_TOKEN = '...'
+API_TOKEN = os.getenv("TELEGRAM_TOKEN")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 channel_id = -1001887928983
 
@@ -532,7 +533,7 @@ async def parse_data(message: types.Message, state: FSMContext):
     user_question = message.text
     await state.update_data({'question': user_question})
 
-    webAppInfo = types.WebAppInfo(url="https://sitetargpt-roxana.amvera.io")
+    webAppInfo = types.WebAppInfo(url="http://37.46.18.192:5000")
     builder = ReplyKeyboardBuilder()
     builder.add(types.KeyboardButton(text='Магические карты', web_app=webAppInfo))
 
@@ -709,7 +710,7 @@ async def parse_data(message: types.Message, state: FSMContext):
     user_question = message.text
     await state.update_data({'question': user_question})
 
-    webAppInfo = types.WebAppInfo(url="https://sitetargpt2-roxana.amvera.io")
+    webAppInfo = types.WebAppInfo(url="http://37.46.18.192:5001")
     builder = ReplyKeyboardBuilder()
     builder.add(types.KeyboardButton(text='Магические карты', web_app=webAppInfo))
 
@@ -823,7 +824,7 @@ async def ask_roman_quest(message: types.Message, state: FSMContext):
         await message.answer(f"Подписка активна! "
                              f"\n"
                              f"\nОсталось дней: {remaining_days}.")
-        webAppInfo = types.WebAppInfo(url="https://sitetargpt-roxana.amvera.io")
+        webAppInfo = types.WebAppInfo(url="http://37.46.18.192:5000")
         builder = ReplyKeyboardBuilder()
         builder.add(types.KeyboardButton(text='Магические карты', web_app=webAppInfo))
         await bot.send_message(chat_id, "Чувства Мысли Действия\n\n"
@@ -845,7 +846,7 @@ async def ask_roman_quest(message: types.Message, state: FSMContext):
         if user_data.get_user_questions(chat_id) >= 0:
             await state.clear()
             await state.set_state(romantic.quest)
-            webAppInfo = types.WebAppInfo(url="https://sitetargpt-roxana.amvera.io")
+            webAppInfo = types.WebAppInfo(url="http://37.46.18.192:5000")
             builder = ReplyKeyboardBuilder()
             builder.add(types.KeyboardButton(text='Магические карты', web_app=webAppInfo))
             await bot.send_message(chat_id, "Чувства Мысли Действия\n\n"
@@ -936,7 +937,7 @@ async def ask_roman_quest1(message: types.Message, state: FSMContext):
         await message.answer(f"Подписка активна! "
                              f"\n"
                              f"\nОсталось дней: {remaining_days}.")
-        webAppInfo = types.WebAppInfo(url="https://sitetargpt-roxana.amvera.io")
+        webAppInfo = types.WebAppInfo(url="http://37.46.18.192:5000")
         builder = ReplyKeyboardBuilder()
         builder.add(types.KeyboardButton(text='Магические карты', web_app=webAppInfo))
         await bot.send_message(chat_id, "Предупреждение от карт\n\n"
@@ -958,7 +959,7 @@ async def ask_roman_quest1(message: types.Message, state: FSMContext):
         if user_data.get_user_questions(chat_id) >= 0:
             await state.clear()
             await state.set_state(dangerous.dan)
-            webAppInfo = types.WebAppInfo(url="https://sitetargpt-roxana.amvera.io")
+            webAppInfo = types.WebAppInfo(url="http://37.46.18.192:5000")
             builder = ReplyKeyboardBuilder()
             builder.add(types.KeyboardButton(text='Магические карты', web_app=webAppInfo))
             await bot.send_message(chat_id, "Предупреждение от карт\n\n"
@@ -1087,7 +1088,7 @@ async def show_agreement(message: types.Message):
 #-----------------------------------------------------------------------------------------------------------------------
 
 
-YOOTOKEN = '390540012:LIVE:61366'
+YOOTOKEN = os.getenv("YOOTOKEN")
 
 @dp.message(lambda message: message.text == 'Оформить подписку')
 async def oplata(message: Message, state: FSMContext):
@@ -1152,9 +1153,9 @@ async def submonth(call: CallbackQuery):
 
     idempotence_key = str(uuid.uuid4())
 
-    Configuration.account_id = 488103
+    Configuration.account_id = int(os.getenv("YOOKASSA_ACCOUNT_ID"))
 
-    Configuration.secret_key = "live_R3YibM2E2n6mkACsY5jg_J-QrVEdHTgQ4fXh1rgrqY4"
+    Configuration.secret_key = os.getenv("YOOKASSA_SECRET_KEY")
 
     email = user_data.get_user_email(chat_id)
 
