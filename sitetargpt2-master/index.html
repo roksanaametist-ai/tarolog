@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Выбери карты</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            color: var(--tg-theme-text-color);
+            background: url('static/stars.gif')
+        }
+
+        body {
+            background-image: url('static/back_room.jpg');
+            background-size: cover;
+            background-repeat: no-repeat;
+            background-attachment: fixed;
+            background-position: center;
+            font-family: Arial, sans-serif;
+            color: #fff;
+            text-align: center;
+        }
+
+        .Main {
+            width: 100%;
+            padding: 25px;
+            text-align: center;
+            position: relative;
+            z-index: 1;
+        }
+
+        .card-container {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .card {
+            width: 70px;
+            margin: 10px;
+            cursor: pointer;
+        }
+
+        .card img {
+            width: 100%;
+            height: 115px;
+            object-fit: cover;
+            border-radius: 5px;
+        }
+
+        .selected-card {
+            border: 1px solid #000000;
+        }
+
+        .result-container {
+            display: none;
+            text-align: center;
+        }
+
+        .result-container img {
+            width: 100px;
+            height: 170px;
+            object-fit: cover;
+            margin: 10px;
+        }
+
+        .btn {
+            display: block;
+            position: fixed;
+            top: 75%;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: #fff;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+    </style>
+</head>
+<body>
+    <div class="Main">
+        <h1>Выбери карты</h1>
+        <div class="card-container"></div>
+        <button class="btn" style="display: none;">Прочитать трактовку</button>
+        <div class="result-container"></div>
+    </div>
+
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+
+    <script>
+        let tg = window.Telegram.WebApp;
+
+        let cards = [];
+        for (let i = 1; i <= 22; i++) {
+            cards.push(`static/card${i}.jpg`);
+        }
+
+        function preloadImages(images) {
+            const additionalImages = ['/static/card_back.jpg', '/static/back_room.jpg'];
+            images = images.concat(additionalImages);
+
+            images.forEach(src => {
+                const img = new Image();
+                img.src = src;
+            });
+        }
+
+        let selectedCards = [];
+        for (let i = 0; i < 7; i++) {
+            let randomIndex = Math.floor(Math.random() * cards.length);
+            selectedCards.push(cards[randomIndex]);
+            cards.splice(randomIndex, 1);
+        }
+
+        preloadImages(selectedCards);
+
+
+        let cardContainer = document.querySelector('.card-container');
+        for (let i = 0; i < selectedCards.length; i++) {
+            let card = document.createElement('div');
+            card.classList.add('card');
+            card.innerHTML = `<img src="static/card_back.jpg" alt="">`;
+            cardContainer.appendChild(card);
+        }
+
+        let clickedCards = [];
+        document.querySelectorAll('.card').forEach((card, index) => {
+            card.addEventListener('click', () => {
+                if (clickedCards.length < 1 && !card.classList.contains('selected-card')) {
+                    card.classList.add('selected-card');
+                    card.innerHTML = `<img src="${selectedCards[index]}" alt="">`;
+                    clickedCards.push(selectedCards[index]);
+                    if (clickedCards.length === 1) {
+                        showResult();
+                    }
+                }
+            });
+        });
+
+        function showResult() {
+            document.querySelector('.card-container').style.display = 'none';
+            document.querySelector('.result-container').style.display = 'block';
+            let resultContainer = document.querySelector('.result-container');
+            for (let i = 0; i < clickedCards.length; i++) {
+                let img = document.createElement('img');
+                img.src = clickedCards[i];
+                resultContainer.appendChild(img);
+            }
+            document.querySelector('.btn').style.display = 'block';
+            document.querySelector('.btn').addEventListener('click', () => {
+                let data = {
+                    cards: clickedCards
+                }
+                tg.sendData(JSON.stringify(data));
+                tg.close();
+            });
+        }
+    </script>
+</body>
+</html>
