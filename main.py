@@ -23,7 +23,12 @@ import random
 #MAKS API_TOKEN = '...'
 #DEMID API_TOKEN = '...'
 API_TOKEN = os.getenv("TELEGRAM_TOKEN")
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# Клиент Groq в режиме OpenAI-совместимого API
+client = OpenAI(
+    api_key=os.getenv("GROQ_API_KEY"),
+    base_url="https://api.groq.com/openai/v1",
+)
 
 # URLs мини‑приложений (WebApp)
 CARDS_WEBAPP_URL = "https://followthefrensy.ru/cards"
@@ -388,7 +393,7 @@ async def get_card_names(card_list):
 
 async def get_tarot_reading(user_message):
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="llama-3.1-70b-versatile",
         messages=[
             {"role": "system", "content": "You are a tarot reader who provides insightful and mystical interpretations of tarot card spreads."},
             {"role": "user", "content": user_message}
