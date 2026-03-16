@@ -25,6 +25,10 @@ import random
 API_TOKEN = os.getenv("TELEGRAM_TOKEN")
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# URLs мини‑приложений (WebApp)
+CARDS_WEBAPP_URL = "https://followthefrensy.ru/cards"
+YESNO_WEBAPP_URL = "https://followthefrensy.ru/yesno"
+
 channel_id = -1001887928983
 
 logging.basicConfig(level=logging.INFO)
@@ -533,7 +537,7 @@ async def parse_data(message: types.Message, state: FSMContext):
     user_question = message.text
     await state.update_data({'question': user_question})
 
-    webAppInfo = types.WebAppInfo(url="http://37.46.18.192:5000")
+    webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
     builder = ReplyKeyboardBuilder()
     builder.add(types.KeyboardButton(text='Магические карты', web_app=webAppInfo))
 
@@ -710,7 +714,7 @@ async def parse_data(message: types.Message, state: FSMContext):
     user_question = message.text
     await state.update_data({'question': user_question})
 
-    webAppInfo = types.WebAppInfo(url="http://37.46.18.192:5001")
+    webAppInfo = types.WebAppInfo(url=YESNO_WEBAPP_URL)
     builder = ReplyKeyboardBuilder()
     builder.add(types.KeyboardButton(text='Магические карты', web_app=webAppInfo))
 
@@ -824,7 +828,7 @@ async def ask_roman_quest(message: types.Message, state: FSMContext):
         await message.answer(f"Подписка активна! "
                              f"\n"
                              f"\nОсталось дней: {remaining_days}.")
-        webAppInfo = types.WebAppInfo(url="http://37.46.18.192:5000")
+        webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
         builder = ReplyKeyboardBuilder()
         builder.add(types.KeyboardButton(text='Магические карты', web_app=webAppInfo))
         await bot.send_message(chat_id, "Чувства Мысли Действия\n\n"
@@ -846,7 +850,7 @@ async def ask_roman_quest(message: types.Message, state: FSMContext):
         if user_data.get_user_questions(chat_id) >= 0:
             await state.clear()
             await state.set_state(romantic.quest)
-            webAppInfo = types.WebAppInfo(url="http://37.46.18.192:5000")
+            webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
             builder = ReplyKeyboardBuilder()
             builder.add(types.KeyboardButton(text='Магические карты', web_app=webAppInfo))
             await bot.send_message(chat_id, "Чувства Мысли Действия\n\n"
@@ -937,7 +941,7 @@ async def ask_roman_quest1(message: types.Message, state: FSMContext):
         await message.answer(f"Подписка активна! "
                              f"\n"
                              f"\nОсталось дней: {remaining_days}.")
-        webAppInfo = types.WebAppInfo(url="http://37.46.18.192:5000")
+        webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
         builder = ReplyKeyboardBuilder()
         builder.add(types.KeyboardButton(text='Магические карты', web_app=webAppInfo))
         await bot.send_message(chat_id, "Предупреждение от карт\n\n"
@@ -959,7 +963,7 @@ async def ask_roman_quest1(message: types.Message, state: FSMContext):
         if user_data.get_user_questions(chat_id) >= 0:
             await state.clear()
             await state.set_state(dangerous.dan)
-            webAppInfo = types.WebAppInfo(url="http://37.46.18.192:5000")
+            webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
             builder = ReplyKeyboardBuilder()
             builder.add(types.KeyboardButton(text='Магические карты', web_app=webAppInfo))
             await bot.send_message(chat_id, "Предупреждение от карт\n\n"
