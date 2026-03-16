@@ -12,3 +12,6 @@ payment_data.json
 logs.json
 chat_data.json
 user_agreements.json
+
+# Секреты и переменные окружения
+.env
