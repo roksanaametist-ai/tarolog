@@ -393,7 +393,7 @@ async def get_card_names(card_list):
 
 async def get_tarot_reading(user_message):
     response = client.chat.completions.create(
-        model="llama-3.1-70b-versatile",
+        model="llama-3.1-8b-instant",
         messages=[
             {"role": "system", "content": "You are a tarot reader who provides insightful and mystical interpretations of tarot card spreads."},
             {"role": "user", "content": user_message}
