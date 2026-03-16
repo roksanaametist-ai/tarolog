@@ -436,6 +436,49 @@ async def get_tarot_reading(user_message):
     )
     return response.choices[0].message.content
 
+
+async def get_tarot_reading_structured(question: str, card_meanings_in_order: list[str]) -> dict:
+    """
+    Возвращает структурированный ответ:
+    {
+      "card_interpretations": ["...", "...", "..."],
+      "summary": "..."
+    }
+    """
+    user_prompt = (
+        "Вопрос пользователя:\n"
+        f"{question}\n\n"
+        "Карты (строго по порядку, только значения, без названий):\n"
+        + "\n".join([f"{i+1}. {m}" for i, m in enumerate(card_meanings_in_order)])
+        + "\n\n"
+          "Ответь СТРОГО в JSON без Markdown и без лишнего текста, в одну строку.\n"
+          "Формат:\n"
+          "{"
+          "\"card_interpretations\":[\"...\",\"...\",\"...\"],"
+          "\"summary\":\"...\""
+          "}\n\n"
+          "Правила:\n"
+          "- Каждая интерпретация должна быть напрямую привязана к вопросу пользователя.\n"
+          "- В summary дай итоговый ответ на вопрос с учетом всех карт (обязательно).\n"
+          "- Не используй слова вроде SUMMARY/ИТОГ/РЕЗЮМЕ как маркеры, просто текст.\n"
+          "- Не перечисляй названия карт.\n"
+          "- Пиши по-русски."
+    )
+
+    raw = await get_tarot_reading(user_prompt)
+    # Пытаемся вытащить JSON даже если модель добавила мусор
+    try:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        raw_json = raw[start : end + 1] if start != -1 and end != -1 and end > start else raw
+        data = json.loads(raw_json)
+        if not isinstance(data, dict):
+            raise ValueError("Not a JSON object")
+        return data
+    except Exception:
+        # Фоллбек: вернем как один общий текст, чтобы бот не молчал
+        return {"card_interpretations": [], "summary": raw}
+
 PAYMENT_FILE = "payment_data.json"
 
 def initialize_payment_file():
@@ -695,44 +738,20 @@ async def process_question(message: types.Message, state: FSMContext):
         msg = await bot.send_message(chat_id, "Происходит магия...")
 
         data_state = await state.get_data()
-        # Просим ИИ: интерпретация каждой карты с учетом вопроса + финальный общий вывод (обязательно)
-        user_question = (
-            data_state["question"]
-            + " Даны следующие карты (не перечисляй их названия, используй только значения): "
-            + cardas
-            + ".\n\n"
-              "Сделай расклад СТРОГО в формате 4 абзацев, разделенных пустой строкой:\n"
-              "[1] Интерпретация 1-й карты строго с учетом вопроса.\n"
-              "[2] Интерпретация 2-й карты строго с учетом вопроса.\n"
-              "[3] Интерпретация 3-й карты строго с учетом вопроса.\n"
-              "[SUMMARY] Итоговый ответ на вопрос с учетом всех 3 карт.\n\n"
-              "Правила: без вступления, без перечисления названий карт, без списков карт, без лишних абзацев. "
-              "Не используй Markdown-разметку. Пиши по-русски."
-        )
-        tarot_response = await get_tarot_reading(user_question)
+        question_text = data_state["question"]
+
+        # Структурированный запрос к модели: интерпретации по порядку + summary
+        card_meanings_in_order = [tarot_cards[card_path] for card_path in cards12]
+        structured = await get_tarot_reading_structured(question_text, card_meanings_in_order)
 
         subscription_end = user_data.get_subscription_end(chat_id)
 
         if not (subscription_end and datetime.now() < subscription_end):
             user_data.decrement_user_questions(message.chat.id)
 
-        paragraphs = split_text_into_paragraphs(tarot_response)
         await bot.delete_message(chat_id, msg.message_id)
-        # Разделяем: абзацы per-card и финальный суммарный абзац (пытаемся найти [SUMMARY])
-        summary_paragraph = ""
-        per_card_paragraphs = []
-        for p in paragraphs:
-            s = p.strip()
-            if s.startswith("[SUMMARY]"):
-                summary_paragraph = s.removeprefix("[SUMMARY]").strip()
-            elif s.startswith("[1]") or s.startswith("[2]") or s.startswith("[3]"):
-                per_card_paragraphs.append(re.sub(r"^\[\d\]\s*", "", s))
-
-        # Фоллбек, если модель не соблюла формат
-        if not per_card_paragraphs:
-            per_card_paragraphs = paragraphs[: len(cards12)]
-        if not summary_paragraph and len(paragraphs) > len(cards12):
-            summary_paragraph = paragraphs[-1].strip()
+        per_card_paragraphs = structured.get("card_interpretations") or []
+        summary_paragraph = (structured.get("summary") or "").strip()
 
         # 1. Перечисление выпавших карт
         names_list = [tarot_cards[card_path] for card_path in cards12]
@@ -753,9 +772,13 @@ async def process_question(message: types.Message, state: FSMContext):
             )
             await asyncio.sleep(3)
 
-        # 3. Общий итоговый ответ, если ИИ его вернул
+        # 3. Общий итоговый ответ (обязателен, но если модель сломалась — всё равно покажем что есть)
         if summary_paragraph:
-            await bot.send_message(chat_id, f"Итоговый ответ по раскладу:\n\n{summary_paragraph}", parse_mode="Markdown")
+            await bot.send_message(
+                chat_id,
+                f"Итоговый ответ по раскладу:\n\n{summary_paragraph}",
+                parse_mode="Markdown",
+            )
 
         # 4. Возврат в главное меню
         await bot.send_message(chat_id, "Расклад завершён. Выберите дальнейшее действие:", reply_markup=main_kb(message.chat.id))
