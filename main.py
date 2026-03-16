@@ -660,8 +660,15 @@ async def process_question(message: types.Message, state: FSMContext):
         msg = await bot.send_message(chat_id, "Происходит магия...")
 
         data_state = await state.get_data()
-        user_question = data_state[
-                            "question"] + 'Ответь на этот вопрос полагаясь на эти карты: ' + cardas + '. Напиши расклад по картам и общий расклад. Напиши текст без оформления текста и без введения. Опиши каждую карту и в конце общий расклад, всё по абзацам.'
+        # Просим ИИ: по одному абзацу на каждую карту + финальный общий вывод
+        user_question = (
+            data_state["question"]
+            + " Даны следующие карты (не перечисляй их названия, используй только значения): "
+            + cardas
+            + ". Сначала опиши по ОДНОМУ абзацу значения карт строго по порядку, без введения и без заключения. "
+              "Каждый из этих абзацев должен относиться к одной карте в том же порядке, без повторения названий карт. "
+              "Затем добавь ОТДЕЛЬНЫМ ПОСЛЕДНИМ абзацем общий итоговый ответ на вопрос с учетом всех карт."
+        )
         tarot_response = await get_tarot_reading(user_question)
 
         subscription_end = user_data.get_subscription_end(chat_id)
@@ -671,14 +678,25 @@ async def process_question(message: types.Message, state: FSMContext):
 
         paragraphs = split_text_into_paragraphs(tarot_response)
         await bot.delete_message(chat_id, msg.message_id)
-        # Ожидаем формат: абзац с общим описанием + по абзацу на каждую карту
-        if paragraphs:
-            # Сначала общий текст "Расклад по картам"
-            await bot.send_message(chat_id, paragraphs[0], parse_mode="Markdown")
+        # Разделяем: абзацы per-card и финальный суммарный абзац
+        summary_paragraph = ""
+        per_card_paragraphs = paragraphs
+        if len(paragraphs) > len(cards12):
+            # Последний абзац считаем общим выводом
+            summary_paragraph = paragraphs[-1]
+            per_card_paragraphs = paragraphs[:-1]
 
-        # Затем для каждой карты отправляем фото и соответствующий абзац (если есть)
+        # 1. Перечисление выпавших карт
+        names_list = [tarot_cards[card_path] for card_path in cards12]
+        names_text_lines = [f"{idx + 1}. {name}" for idx, name in enumerate(names_list)]
+        header = "Перечисление выпавших карт:\n" + "\n".join(names_text_lines)
+        await bot.send_message(chat_id, header, parse_mode="Markdown")
+
+        # 2. Для каждой карты отправляем фото и её интерпретацию
         for idx, card_path in enumerate(cards12):
-            caption = paragraphs[idx + 1] if idx + 1 < len(paragraphs) else None
+            card_name = tarot_cards[card_path]
+            interp = per_card_paragraphs[idx] if idx < len(per_card_paragraphs) else ""
+            caption = f"Карта {idx + 1}: {card_name}\n\n{interp}".strip()
             await photo_sender.send_photo(
                 message.chat.id,
                 card_path,
@@ -687,8 +705,12 @@ async def process_question(message: types.Message, state: FSMContext):
             )
             await asyncio.sleep(3)
 
-        # В конце возвращаем клавиатуру в главное меню
-        await bot.send_message(chat_id, "Перейти в главное меню:", reply_markup=main_kb(message.chat.id))
+        # 3. Общий итоговый ответ, если ИИ его вернул
+        if summary_paragraph:
+            await bot.send_message(chat_id, f"Итоговый ответ по раскладу:\n\n{summary_paragraph}", parse_mode="Markdown")
+
+        # 4. Возврат в главное меню
+        await bot.send_message(chat_id, "Расклад завершён. Выберите дальнейшее действие:", reply_markup=main_kb(message.chat.id))
         await state.clear()
     else: 
         await bot.send_message(message.chat.id, "Неправильный ввод. Повторите попытку")
