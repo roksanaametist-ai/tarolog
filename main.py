@@ -660,14 +660,19 @@ async def process_question(message: types.Message, state: FSMContext):
         msg = await bot.send_message(chat_id, "Происходит магия...")
 
         data_state = await state.get_data()
-        # Просим ИИ: по одному абзацу на каждую карту + финальный общий вывод
+        # Просим ИИ: интерпретация каждой карты с учетом вопроса + финальный общий вывод (обязательно)
         user_question = (
             data_state["question"]
             + " Даны следующие карты (не перечисляй их названия, используй только значения): "
             + cardas
-            + ". Сначала опиши по ОДНОМУ абзацу значения карт строго по порядку, без введения и без заключения. "
-              "Каждый из этих абзацев должен относиться к одной карте в том же порядке, без повторения названий карт. "
-              "Затем добавь ОТДЕЛЬНЫМ ПОСЛЕДНИМ абзацем общий итоговый ответ на вопрос с учетом всех карт."
+            + ".\n\n"
+              "Сделай расклад СТРОГО в формате 4 абзацев, разделенных пустой строкой:\n"
+              "[1] Интерпретация 1-й карты строго с учетом вопроса.\n"
+              "[2] Интерпретация 2-й карты строго с учетом вопроса.\n"
+              "[3] Интерпретация 3-й карты строго с учетом вопроса.\n"
+              "[SUMMARY] Итоговый ответ на вопрос с учетом всех 3 карт.\n\n"
+              "Правила: без вступления, без перечисления названий карт, без списков карт, без лишних абзацев. "
+              "Не используй Markdown-разметку. Пиши по-русски."
         )
         tarot_response = await get_tarot_reading(user_question)
 
@@ -678,13 +683,21 @@ async def process_question(message: types.Message, state: FSMContext):
 
         paragraphs = split_text_into_paragraphs(tarot_response)
         await bot.delete_message(chat_id, msg.message_id)
-        # Разделяем: абзацы per-card и финальный суммарный абзац
+        # Разделяем: абзацы per-card и финальный суммарный абзац (пытаемся найти [SUMMARY])
         summary_paragraph = ""
-        per_card_paragraphs = paragraphs
-        if len(paragraphs) > len(cards12):
-            # Последний абзац считаем общим выводом
-            summary_paragraph = paragraphs[-1]
-            per_card_paragraphs = paragraphs[:-1]
+        per_card_paragraphs = []
+        for p in paragraphs:
+            s = p.strip()
+            if s.startswith("[SUMMARY]"):
+                summary_paragraph = s.removeprefix("[SUMMARY]").strip()
+            elif s.startswith("[1]") or s.startswith("[2]") or s.startswith("[3]"):
+                per_card_paragraphs.append(re.sub(r"^\[\d\]\s*", "", s))
+
+        # Фоллбек, если модель не соблюла формат
+        if not per_card_paragraphs:
+            per_card_paragraphs = paragraphs[: len(cards12)]
+        if not summary_paragraph and len(paragraphs) > len(cards12):
+            summary_paragraph = paragraphs[-1].strip()
 
         # 1. Перечисление выпавших карт
         names_list = [tarot_cards[card_path] for card_path in cards12]
