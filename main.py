@@ -671,15 +671,24 @@ async def process_question(message: types.Message, state: FSMContext):
 
         paragraphs = split_text_into_paragraphs(tarot_response)
         await bot.delete_message(chat_id, msg.message_id)
-        for i, paragraph in enumerate(paragraphs):
-            i += 1
-            if i == 4:
-                await bot.send_message(chat_id, paragraph, reply_markup=main_kb(message.chat.id))
-            else:
-                await photo_sender.send_photo(message.chat.id, cards12[i-1], caption=paragraph,
-                                              parse_mode="Markdown")
-                await asyncio.sleep(3)
+        # Ожидаем формат: абзац с общим описанием + по абзацу на каждую карту
+        if paragraphs:
+            # Сначала общий текст "Расклад по картам"
+            await bot.send_message(chat_id, paragraphs[0], parse_mode="Markdown")
 
+        # Затем для каждой карты отправляем фото и соответствующий абзац (если есть)
+        for idx, card_path in enumerate(cards12):
+            caption = paragraphs[idx + 1] if idx + 1 < len(paragraphs) else None
+            await photo_sender.send_photo(
+                message.chat.id,
+                card_path,
+                caption=caption,
+                parse_mode="Markdown",
+            )
+            await asyncio.sleep(3)
+
+        # В конце возвращаем клавиатуру в главное меню
+        await bot.send_message(chat_id, "Перейти в главное меню:", reply_markup=main_kb(message.chat.id))
         await state.clear()
     else: 
         await bot.send_message(message.chat.id, "Неправильный ввод. Повторите попытку")
