@@ -477,14 +477,27 @@ async def get_card_names(card_list):
     return ", ".join([tarot_cards[card] for card in card_list])
 
 async def get_tarot_reading(user_message):
-    response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[
-            {"role": "system", "content": "You are a tarot reader who provides insightful and mystical interpretations of tarot card spreads."},
-            {"role": "user", "content": user_message}
-        ]
-    )
-    return response.choices[0].message.content
+    last_err = None
+    for attempt in range(3):
+        try:
+            response = client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[
+                    {"role": "system", "content": "You are a tarot reader who provides insightful and mystical interpretations of tarot card spreads."},
+                    {"role": "user", "content": user_message}
+                ],
+            )
+            content = response.choices[0].message.content
+            if isinstance(content, str) and content.strip():
+                return content
+            last_err = ValueError("Empty model response")
+        except Exception as e:
+            last_err = e
+
+        # небольшой бэкофф
+        await asyncio.sleep(1 + attempt)
+
+    raise RuntimeError(f"Groq request failed after retries: {last_err}")
 
 
 async def get_tarot_reading_structured(
@@ -542,6 +555,7 @@ async def get_tarot_reading_structured(
         return data
 
     # 1) Первая попытка — обычная
+    data = None
     try:
         data = await call_and_parse(strict=False)
     except Exception:
@@ -918,7 +932,12 @@ async def process_question(message: types.Message, state: FSMContext):
 
         # Структурированный запрос к модели: интерпретации по порядку + summary
         card_meanings_in_order = [tarot_cards[card_path] for card_path in cards12]
-        structured = await get_tarot_reading_structured(question_text, card_meanings_in_order)
+        try:
+            structured = await get_tarot_reading_structured(question_text, card_meanings_in_order)
+        except Exception:
+            await bot.delete_message(chat_id, msg.message_id)
+            await bot.send_message(chat_id, "Не удалось получить трактовку от ИИ. Попробуйте ещё раз позже.", reply_markup=main_kb(message.chat.id))
+            return
 
         subscription_end = user_data.get_subscription_end(chat_id)
 
@@ -928,6 +947,13 @@ async def process_question(message: types.Message, state: FSMContext):
         await bot.delete_message(chat_id, msg.message_id)
         per_card_paragraphs = structured.get("card_interpretations") or []
         summary_paragraph = (structured.get("summary") or "").strip()
+        if any(not (isinstance(x, str) and x.strip()) for x in per_card_paragraphs) or (len(cards12) > 1 and not summary_paragraph):
+            # если ИИ всё равно вернул пустоту — не шлём пустые сообщения и не списываем вопрос
+            if not (subscription_end and datetime.now() < subscription_end):
+                user_data.increment_user_questions(message.chat.id, 1)
+            await bot.send_message(chat_id, "ИИ вернул неполный ответ. Попробуйте повторить расклад.", reply_markup=main_kb(message.chat.id))
+            await state.clear()
+            return
 
         # 1. Перечисление выпавших карт
         names_list = [tarot_cards[card_path] for card_path in cards12]
