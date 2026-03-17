@@ -487,7 +487,11 @@ async def get_tarot_reading(user_message):
     return response.choices[0].message.content
 
 
-async def get_tarot_reading_structured(question: str, card_meanings_in_order: list[str]) -> dict:
+async def get_tarot_reading_structured(
+    question: str,
+    card_meanings_in_order: list[str],
+    card_roles_in_order: Optional[list[str]] = None,
+) -> dict:
     """
     Возвращает структурированный ответ:
     {
@@ -495,29 +499,40 @@ async def get_tarot_reading_structured(question: str, card_meanings_in_order: li
       "summary": "..."
     }
     """
-    user_prompt = (
-        "Вопрос пользователя:\n"
-        f"{question}\n\n"
-        "Карты (строго по порядку, только значения, без названий):\n"
-        + "\n".join([f"{i+1}. {m}" for i, m in enumerate(card_meanings_in_order)])
-        + "\n\n"
-          "Ответь СТРОГО в JSON без Markdown и без лишнего текста, в одну строку.\n"
-          "Формат:\n"
-          "{"
-          "\"card_interpretations\":[\"...\",\"...\",\"...\"],"
-          "\"summary\":\"...\""
-          "}\n\n"
-          "Правила:\n"
-          "- Каждая интерпретация должна быть напрямую привязана к вопросу пользователя.\n"
-          "- В summary дай итоговый ответ на вопрос с учетом всех карт (обязательно).\n"
-          "- Не используй слова вроде SUMMARY/ИТОГ/РЕЗЮМЕ как маркеры, просто текст.\n"
-          "- Не перечисляй названия карт.\n"
-          "- Пиши по-русски."
-    )
+    expected_n = len(card_meanings_in_order)
+    roles = card_roles_in_order or []
+    lines = []
+    for i, meaning in enumerate(card_meanings_in_order):
+        role_prefix = f" ({roles[i]})" if i < len(roles) and roles[i] else ""
+        lines.append(f"{i+1}.{role_prefix} {meaning}")
 
-    raw = await get_tarot_reading(user_prompt)
-    # Пытаемся вытащить JSON даже если модель добавила мусор
-    try:
+    def build_prompt(strict: bool) -> str:
+        return (
+            "Вопрос пользователя:\n"
+            f"{question}\n\n"
+            "Карты (строго по порядку; это значения карт, не названия):\n"
+            + "\n".join(lines)
+            + "\n\n"
+              "Ответь СТРОГО в JSON без Markdown и без лишнего текста, в одну строку.\n"
+              "Формат:\n"
+              "{"
+              f"\"card_interpretations\":[{','.join(['\"...\"'] * expected_n)}],"
+              "\"summary\":\"...\""
+              "}\n\n"
+              "Правила:\n"
+              "- Дай РОВНО "
+            + str(expected_n)
+            + " трактовок, по одной на каждую карту в том же порядке.\n"
+              "- Каждая трактовка должна быть привязана к вопросу и роли карты (если роль указана).\n"
+              "- Если карт больше одной, summary ОБЯЗАТЕЛЕН: итоговый ответ на вопрос с учетом всех карт.\n"
+              "- Не перечисляй названия карт, не пиши списки карт, не добавляй лишние поля.\n"
+              "- Не используй слова вроде SUMMARY/ИТОГ/РЕЗЮМЕ как маркеры.\n"
+              "- Пиши по-русски.\n"
+            + ("- Не допускаются пустые трактовки.\n" if strict else "")
+        )
+
+    async def call_and_parse(strict: bool) -> dict:
+        raw = await get_tarot_reading(build_prompt(strict))
         start = raw.find("{")
         end = raw.rfind("}")
         raw_json = raw[start : end + 1] if start != -1 and end != -1 and end > start else raw
@@ -525,9 +540,41 @@ async def get_tarot_reading_structured(question: str, card_meanings_in_order: li
         if not isinstance(data, dict):
             raise ValueError("Not a JSON object")
         return data
+
+    # 1) Первая попытка — обычная
+    try:
+        data = await call_and_parse(strict=False)
     except Exception:
-        # Фоллбек: вернем как один общий текст, чтобы бот не молчал
-        return {"card_interpretations": [], "summary": raw}
+        data = {"card_interpretations": [], "summary": ""}
+
+    # 2) Валидация и возможный retry — строгий
+    ci = data.get("card_interpretations") if isinstance(data, dict) else None
+    summary = data.get("summary") if isinstance(data, dict) else None
+    ok_ci = isinstance(ci, list) and len(ci) == expected_n and all(isinstance(x, str) and x.strip() for x in ci)
+    ok_summary = True if expected_n <= 1 else isinstance(summary, str) and summary.strip()
+    if not (ok_ci and ok_summary):
+        try:
+            data2 = await call_and_parse(strict=True)
+            ci2 = data2.get("card_interpretations")
+            summary2 = data2.get("summary")
+            ok_ci2 = isinstance(ci2, list) and len(ci2) == expected_n and all(isinstance(x, str) and x.strip() for x in ci2)
+            ok_summary2 = True if expected_n <= 1 else isinstance(summary2, str) and summary2.strip()
+            if ok_ci2 and ok_summary2:
+                return data2
+        except Exception:
+            pass
+
+    # Фоллбек: гарантируем длину массива, summary может быть пустым (но бот не упадёт)
+    if not isinstance(ci, list):
+        ci = []
+    ci = [(x.strip() if isinstance(x, str) else "") for x in ci]
+    while len(ci) < expected_n:
+        ci.append("")
+    if len(ci) > expected_n:
+        ci = ci[:expected_n]
+    if not isinstance(summary, str):
+        summary = ""
+    return {"card_interpretations": ci, "summary": summary.strip()}
 
 PAYMENT_FILE = "payment_data.json"
 
@@ -1159,7 +1206,11 @@ async def process_question(message: types.Message, state: FSMContext):
             "3-я карта: какие действия предпримет партнер."
         )
         card_meanings_in_order = [tarot_cards[card_path] for card_path in cards12]
-        structured = await get_tarot_reading_structured(question_text, card_meanings_in_order)
+        structured = await get_tarot_reading_structured(
+            question_text,
+            card_meanings_in_order,
+            card_roles_in_order=["Чувства", "Мысли", "Действия"],
+        )
 
         subscription_end = user_data.get_subscription_end(chat_id)
         if not (subscription_end and datetime.now() < subscription_end):
@@ -1291,7 +1342,11 @@ async def process_question(message: types.Message, state: FSMContext):
             "3-я карта: совет для нейтрализации негативных последствий."
         )
         card_meanings_in_order = [tarot_cards[card_path] for card_path in cards12]
-        structured = await get_tarot_reading_structured(question_text, card_meanings_in_order)
+        structured = await get_tarot_reading_structured(
+            question_text,
+            card_meanings_in_order,
+            card_roles_in_order=["Описание ситуации", "Негативные последствия", "Совет"],
+        )
 
         subscription_end = user_data.get_subscription_end(chat_id)
         if not (subscription_end and datetime.now() < subscription_end):
