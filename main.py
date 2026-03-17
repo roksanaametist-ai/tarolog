@@ -507,6 +507,11 @@ async def get_tarot_reading_structured(
         lines.append(f"{i+1}.{role_prefix} {meaning}")
 
     def build_prompt(strict: bool) -> str:
+        json_example = json.dumps(
+            {"card_interpretations": ["..."] * expected_n, "summary": "..."},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
         return (
             "Вопрос пользователя:\n"
             f"{question}\n\n"
@@ -515,14 +520,9 @@ async def get_tarot_reading_structured(
             + "\n\n"
               "Ответь СТРОГО в JSON без Markdown и без лишнего текста, в одну строку.\n"
               "Формат:\n"
-              "{"
-              f"\"card_interpretations\":[{','.join(['\"...\"'] * expected_n)}],"
-              "\"summary\":\"...\""
-              "}\n\n"
+              f"{json_example}\n\n"
               "Правила:\n"
-              "- Дай РОВНО "
-            + str(expected_n)
-            + " трактовок, по одной на каждую карту в том же порядке.\n"
+              f"- Дай РОВНО {expected_n} трактовок, по одной на каждую карту в том же порядке.\n"
               "- Каждая трактовка должна быть привязана к вопросу и роли карты (если роль указана).\n"
               "- Если карт больше одной, summary ОБЯЗАТЕЛЕН: итоговый ответ на вопрос с учетом всех карт.\n"
               "- Не перечисляй названия карт, не пиши списки карт, не добавляй лишние поля.\n"
