@@ -1151,26 +1151,45 @@ async def process_question(message: types.Message, state: FSMContext):
 
         msg = await bot.send_message(chat_id, "Происходит магия...")
 
-        user_question = 'Ответь на эти вопросы. 1-я карта отвечает на вопрос: Что чувствует партнер? 2-я карта показывает: О чем думает партнер? 3-я карта раскрывает: Какие действия предпримет партнер? Полагайся на: ' + cardas + '. Напиши расклад и общий расклад. Напиши текст без оформления текста и без введения. Опиши каждую карту и в конце общий расклад, всё по абзацам.'
-
-        tarot_response = await get_tarot_reading(user_question)
+        # Структурированный расклад, чтобы порядок текста не сбивался
+        question_text = (
+            "Расклад «Чувства / Мысли / Действия».\n"
+            "1-я карта: что чувствует партнер.\n"
+            "2-я карта: о чём думает партнер.\n"
+            "3-я карта: какие действия предпримет партнер."
+        )
+        card_meanings_in_order = [tarot_cards[card_path] for card_path in cards12]
+        structured = await get_tarot_reading_structured(question_text, card_meanings_in_order)
 
         subscription_end = user_data.get_subscription_end(chat_id)
-
         if not (subscription_end and datetime.now() < subscription_end):
             user_data.decrement_user_questions(message.chat.id)
 
-        paragraphs = split_text_into_paragraphs(tarot_response)
         await bot.delete_message(chat_id, msg.message_id)
-        for i, paragraph in enumerate(paragraphs):
-            i += 1
-            if i == 4:
-                await bot.send_message(chat_id, paragraph, reply_markup=main_kb(message.chat.id))
-            else:
-                await photo_sender.send_photo(message.chat.id, cards12[i-1], caption=paragraph,
-                                              parse_mode="Markdown")
-                await asyncio.sleep(3)
+        per_card_paragraphs = structured.get("card_interpretations") or []
+        summary_paragraph = (structured.get("summary") or "").strip()
+        while len(per_card_paragraphs) < len(cards12):
+            per_card_paragraphs.append("")
 
+        # 1. Перечисление карт (фиксируем названия из словаря, не из ИИ)
+        names_list = [tarot_cards[card_path] for card_path in cards12]
+        names_text_lines = [f"{idx + 1}. {name}" for idx, name in enumerate(names_list)]
+        header = "Перечисление выпавших карт:\n" + "\n".join(names_text_lines)
+        await bot.send_message(chat_id, header, parse_mode="Markdown")
+
+        # 2. Карта + текст строго по порядку
+        for idx, card_path in enumerate(cards12):
+            card_name = tarot_cards[card_path]
+            interp = per_card_paragraphs[idx]
+            caption = f"Карта {idx + 1}: {card_name}\n\n{interp}".strip()
+            await photo_sender.send_photo(chat_id, card_path, caption=caption, parse_mode="Markdown")
+            await asyncio.sleep(3)
+
+        # 3. Итог
+        if summary_paragraph:
+            await bot.send_message(chat_id, f"Итоговый ответ по раскладу:\n\n{summary_paragraph}", parse_mode="Markdown")
+
+        await bot.send_message(chat_id, "Расклад завершён. Выберите дальнейшее действие:", reply_markup=main_kb(message.chat.id))
         await state.clear()
     else:
         await bot.send_message(message.chat.id, "Неправильный ввод. Повторите попытку")
@@ -1264,26 +1283,45 @@ async def process_question(message: types.Message, state: FSMContext):
 
         msg = await bot.send_message(chat_id, "Происходит магия...")
 
-        user_question = 'Ответь на эти вопросы 1-я карта отвечает на вопрос: Описание ситуации? 2-я карта показывает: Возможные негативные последствия ? 3-я карта раскрывает: Совет для нейтрализации негативных последствий? полагаясь на: ' + cardas + '. Напиши расклад и общий расклад. Напиши текст без оформления текста и без введения. Опиши каждую карту и в конце общий расклад, всё по абзацам.'
-
-        tarot_response = await get_tarot_reading(user_question)
+        # Структурированный расклад, чтобы порядок текста не сбивался
+        question_text = (
+            "Расклад «Предупреждение от карт».\n"
+            "1-я карта: описание ситуации.\n"
+            "2-я карта: возможные негативные последствия.\n"
+            "3-я карта: совет для нейтрализации негативных последствий."
+        )
+        card_meanings_in_order = [tarot_cards[card_path] for card_path in cards12]
+        structured = await get_tarot_reading_structured(question_text, card_meanings_in_order)
 
         subscription_end = user_data.get_subscription_end(chat_id)
-
         if not (subscription_end and datetime.now() < subscription_end):
             user_data.decrement_user_questions(message.chat.id)
 
-        paragraphs = split_text_into_paragraphs(tarot_response)
         await bot.delete_message(chat_id, msg.message_id)
-        for i, paragraph in enumerate(paragraphs):
-            i += 1
-            if i == 4:
-                await bot.send_message(chat_id, paragraph, reply_markup=main_kb(message.chat.id))
-            else:
-                await photo_sender.send_photo(message.chat.id, cards12[i-1], caption=paragraph,
-                                              parse_mode="Markdown")
-                await asyncio.sleep(3)
+        per_card_paragraphs = structured.get("card_interpretations") or []
+        summary_paragraph = (structured.get("summary") or "").strip()
+        while len(per_card_paragraphs) < len(cards12):
+            per_card_paragraphs.append("")
 
+        # 1. Перечисление карт (фиксируем названия из словаря, не из ИИ)
+        names_list = [tarot_cards[card_path] for card_path in cards12]
+        names_text_lines = [f"{idx + 1}. {name}" for idx, name in enumerate(names_list)]
+        header = "Перечисление выпавших карт:\n" + "\n".join(names_text_lines)
+        await bot.send_message(chat_id, header, parse_mode="Markdown")
+
+        # 2. Карта + текст строго по порядку
+        for idx, card_path in enumerate(cards12):
+            card_name = tarot_cards[card_path]
+            interp = per_card_paragraphs[idx]
+            caption = f"Карта {idx + 1}: {card_name}\n\n{interp}".strip()
+            await photo_sender.send_photo(chat_id, card_path, caption=caption, parse_mode="Markdown")
+            await asyncio.sleep(3)
+
+        # 3. Итог
+        if summary_paragraph:
+            await bot.send_message(chat_id, f"Итоговый ответ по раскладу:\n\n{summary_paragraph}", parse_mode="Markdown")
+
+        await bot.send_message(chat_id, "Расклад завершён. Выберите дальнейшее действие:", reply_markup=main_kb(message.chat.id))
         await state.clear()
     else:
         await bot.send_message(message.chat.id, "Неправильный ввод. Повторите попытку")
