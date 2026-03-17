@@ -34,29 +34,6 @@ client = OpenAI(
 CARDS_WEBAPP_URL = "https://followthefrensy.ru/cards"
 YESNO_WEBAPP_URL = "https://followthefrensy.ru/yesno"
 
-# ---------------------------------------------------------------------------
-# Тексты для разных языков (минимальный набор, будем расширять по мере надобности)
-
-TEXTS = {
-    "start_choose_lang": {
-        "ru": "Выбери язык / Choose your language:",
-        "en": "Choose your language:",
-    },
-    "start_greeting": {
-        "ru": "Привет!\nЯ твой персональный бот-таролог 🤖",
-        "en": "Hi!\nI am your personal tarot bot 🤖",
-    },
-    "main_menu_hint": {
-        "ru": "Воспользуйся кнопками ниже, чтобы взаимодействовать со мной:",
-        "en": "Use the buttons below to interact with me:",
-    },
-}
-
-
-def tr(key: str, lang: str = "ru") -> str:
-    """Получить текст по ключу и языку, с откатом на русский."""
-    return TEXTS.get(key, {}).get(lang, TEXTS.get(key, {}).get("ru", ""))
-
 channel_id = -1001887928983
 
 logging.basicConfig(level=logging.INFO)
@@ -174,13 +151,7 @@ class UserData:
 
     def add_user(self, chat_id: int) -> None:
         if str(chat_id) not in self.data:
-            # язык по умолчанию — русский
-            self.data[str(chat_id)] = {
-                'questions': 5,
-                'subscription_end': None,
-                'email': None,
-                'lang': 'ru',
-            }
+            self.data[str(chat_id)] = {'questions': 5, 'subscription_end': None}
             self.save_data()
 
     def get_user_questions(self, chat_id: int) -> int:
@@ -223,10 +194,9 @@ class UserData:
     def set_user_email(self, chat_id: int, email: str) -> None:
         if not self.is_valid_email(email):
             raise ValueError("Некорректный email адрес.")
-        if str(chat_id) not in self.data:
-            self.add_user(chat_id)
-        self.data[str(chat_id)]['email'] = email
-        self.save_data()
+        if str(chat_id) in self.data:
+            self.data[str(chat_id)]['email'] = email
+            self.save_data()
 
     def get_user_email(self, chat_id: int) -> Optional[str]:
         return self.data.get(str(chat_id), {}).get('email')
@@ -240,20 +210,6 @@ class UserData:
         excluded_ids_str = set(map(str, excluded_ids))
 
         return [int(chat_id) for chat_id in all_ids if chat_id not in excluded_ids_str]
-
-    # ---- язык пользователя ----
-    def get_user_lang(self, chat_id: int) -> str:
-        """Получить язык пользователя ('ru' или 'en'), по умолчанию 'ru'."""
-        return self.data.get(str(chat_id), {}).get('lang', 'ru')
-
-    def set_user_lang(self, chat_id: int, lang: str) -> None:
-        """Установить язык пользователя."""
-        if lang not in ("ru", "en"):
-            return
-        if str(chat_id) not in self.data:
-            self.add_user(chat_id)
-        self.data[str(chat_id)]['lang'] = lang
-        self.save_data()
 
 user_data = UserData()
 
@@ -580,37 +536,19 @@ async def pidor_doma():
 @dp.message(CommandStart())
 async def send_welcome(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-    chat_id = message.chat.id
-    logger.log_command(chat_id, message.text)
-    user_data.add_user(chat_id)
-
-    # выбор языка, если ещё не выбран
-    lang = user_data.get_user_lang(chat_id)
-    if lang not in ("ru", "en"):
-        kb = InlineKeyboardBuilder()
-        kb.button(text="Русский 🇷🇺", callback_data="set_lang_ru")
-        kb.button(text="English 🇬🇧", callback_data="set_lang_en")
-        await message.answer(tr("start_choose_lang", "ru"), reply_markup=kb.as_markup())
-        return
-
+    logger.log_command(message.chat.id, message.text)
+    user_data.add_user(message.chat.id)
     if not agreement_manager.user_has_agreed(user_id):
-        await message.answer(
-            "Для предоставления доступа к работе с ботом вам необходимо ознакомиться с доп. соглашением.\n\n"
-            "Оно расположено по ссылке:\n"
-            "https://telegra.ph/Polzovatelskoe-soglashenie-01-21-11",
-            reply_markup=get_agreement_keyboard(),
-        )
+        await message.answer("Для предоставления доступа к работе с ботом вам необходимо ознакомиться с доп. соглашением.\n\nОно расположено по ссылке:\n"
+                             "https://telegra.ph/Polzovatelskoe-soglashenie-01-21-11",reply_markup=get_agreement_keyboard())
 
     else:
         await message.answer(
-            f"{tr('start_greeting', lang)}\n{tr('main_menu_hint', lang)}",
-            reply_markup=main_kb(chat_id),
-        )
+            "Привет!\nЯ твой персональный бот-таролог 🤖\n"
+            "Воспользуйся кнопками ниже, чтобы взаимодействовать со мной:", reply_markup=main_kb(message.chat.id))
         await state.clear()
-        questions = user_data.get_user_questions(chat_id)
-        text_ru = f"У вас доступно {questions} вопросов"
-        text_en = f"You have {questions} questions available"
-        await bot.send_message(chat_id, text_ru if lang == "ru" else text_en)
+        await bot.send_message(message.chat.id,
+                               f"У вас доступно {user_data.get_user_questions(message.chat.id)} вопросов")
 
 
 @dp.callback_query(F.data.in_(["agree", "disagree"]))
@@ -632,17 +570,6 @@ async def process_agreement(callback: types.CallbackQuery, state: FSMContext):
 
     await callback.answer()
 #lox2.0
-
-
-@dp.callback_query(F.data.in_(["set_lang_ru", "set_lang_en"]))
-async def set_language(callback: types.CallbackQuery, state: FSMContext):
-    """Выбор языка пользователем при старте или смене языка."""
-    chat_id = callback.message.chat.id
-    lang = "ru" if callback.data == "set_lang_ru" else "en"
-    user_data.set_user_lang(chat_id, lang)
-    await callback.message.delete()
-    # повторяем /start уже с выбранным языком
-    await send_welcome(callback.message, state)
 
 @dp.callback_query(lambda c: c.data in ['agree', 'disagree'])
 async def process_agreement(callback_query: types.CallbackQuery, state: FSMContext):
