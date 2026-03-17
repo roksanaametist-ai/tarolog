@@ -584,6 +584,7 @@ async def periodic_30day_refill():
     """
     while True:
         now = datetime.now()
+        today_str = str(now.date())
         # Снимок пользователей, чтобы не ломаться если data меняется
         user_ids = list(user_data.data.keys())
         for chat_id_str in user_ids:
@@ -599,6 +600,30 @@ async def periodic_30day_refill():
 
             delta_days = (now.date() - last_refill.date()).days
             if delta_days < 30:
+                continue
+
+            # Пополнение только подписанным на канал
+            try:
+                member = await bot.get_chat_member(channel_id, chat_id)
+                is_subscribed = isinstance(member, ChatMemberMember) or isinstance(member, ChatMemberOwner)
+            except Exception:
+                is_subscribed = False
+
+            if not is_subscribed:
+                # Не копим "долг" по пополнениям для неподписанных: сдвигаем точку отсчёта на сейчас
+                user_data.set_last_refill_at(chat_id, now)
+                # Напоминание максимум раз в день
+                notice_key = f"refill_nonsub_notice_{chat_id}"
+                if grant_state.get(notice_key) != today_str:
+                    grant_state.set(notice_key, today_str)
+                    try:
+                        await bot.send_message(
+                            chat_id,
+                            "Чтобы получать ежемесячное пополнение (+5 вопросов каждые 30 дней), подпишитесь на канал:\n"
+                            "https://t.me/follow_the_frensy",
+                        )
+                    except Exception:
+                        pass
                 continue
 
             periods = delta_days // 30
