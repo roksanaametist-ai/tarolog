@@ -812,7 +812,7 @@ async def parse_data(message: types.Message, state: FSMContext):
 
     webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
     builder = InlineKeyboardBuilder()
-    builder.add(types.InlineKeyboardButton(text='Выбрать карты', web_app=webAppInfo))
+    builder.add(types.InlineKeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
 
     await state.set_state(Form.cards)
     await bot.send_message(message.chat.id, "Если хотите ввести свои карты, напишите от 3 до 6 карт через запятую!")
@@ -1025,7 +1025,7 @@ async def parse_data(message: types.Message, state: FSMContext):
 
     webAppInfo = types.WebAppInfo(url=YESNO_WEBAPP_URL)
     builder = InlineKeyboardBuilder()
-    builder.add(types.InlineKeyboardButton(text='Выбрать карту', web_app=webAppInfo))
+    builder.add(types.InlineKeyboardButton(text='🃏 Выбрать карту', web_app=webAppInfo))
 
     await state.set_state(Form2.cards)
     await bot.send_message(message.chat.id, "Если хотите ввести свои карту, напишите 1 карту!")
@@ -1152,7 +1152,7 @@ async def ask_roman_quest(message: types.Message, state: FSMContext):
                              f"\nОсталось дней: {remaining_days}.")
         webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
         builder = InlineKeyboardBuilder()
-        builder.add(types.InlineKeyboardButton(text='Выбрать карты', web_app=webAppInfo))
+        builder.add(types.InlineKeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
         await bot.send_message(chat_id, "Чувства Мысли Действия\n\n"
                                              "В этом разделе ты сможешь узнать чувства, мысли и действия партнера.\n\n"
                                              "Все просто!\n\n" 
@@ -1174,7 +1174,7 @@ async def ask_roman_quest(message: types.Message, state: FSMContext):
             await state.set_state(romantic.quest)
             webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
             builder = InlineKeyboardBuilder()
-            builder.add(types.InlineKeyboardButton(text='Выбрать карты', web_app=webAppInfo))
+            builder.add(types.InlineKeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
             await bot.send_message(chat_id, "Чувства Мысли Действия\n\n"
                                             "В этом разделе ты сможешь узнать чувства, мысли и действия партнера.\n\n"
                                             "Все просто!\n\n"
@@ -1288,7 +1288,7 @@ async def ask_roman_quest1(message: types.Message, state: FSMContext):
                              f"\nОсталось дней: {remaining_days}.")
         webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
         builder = InlineKeyboardBuilder()
-        builder.add(types.InlineKeyboardButton(text='Выбрать карты', web_app=webAppInfo))
+        builder.add(types.InlineKeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
         await bot.send_message(chat_id, "Предупреждение от карт\n\n"
                                              "В этом разделе ты сможешь узнать предупреждение от карт.\n\n"
                                              "Все просто!\n\n" 
@@ -1310,7 +1310,7 @@ async def ask_roman_quest1(message: types.Message, state: FSMContext):
             await state.set_state(dangerous.dan)
             webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
             builder = InlineKeyboardBuilder()
-            builder.add(types.InlineKeyboardButton(text='Выбрать карты', web_app=webAppInfo))
+            builder.add(types.InlineKeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
             await bot.send_message(chat_id, "Предупреждение от карт\n\n"
                                             "В этом разделе ты сможешь узнать предупреждение от карт.\n\n"
                                             "Все просто!\n\n"
