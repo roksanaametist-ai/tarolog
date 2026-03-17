@@ -151,7 +151,15 @@ class UserData:
 
     def add_user(self, chat_id: int) -> None:
         if str(chat_id) not in self.data:
-            self.data[str(chat_id)] = {'questions': 5, 'subscription_end': None}
+            # Новый пользователь получает 5 вопросов один раз при первой регистрации
+            now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            self.data[str(chat_id)] = {
+                'questions': 5,
+                'subscription_end': None,
+                'email': None,
+                # Для автопополнения раз в 30 дней
+                'last_refill_at': now_str,
+            }
             self.save_data()
 
     def get_user_questions(self, chat_id: int) -> int:
@@ -211,9 +219,51 @@ class UserData:
 
         return [int(chat_id) for chat_id in all_ids if chat_id not in excluded_ids_str]
 
+    def get_last_refill_at(self, chat_id: int) -> Optional[datetime]:
+        val = self.data.get(str(chat_id), {}).get('last_refill_at')
+        if not val:
+            return None
+        try:
+            return datetime.strptime(val, '%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            return None
+
+    def set_last_refill_at(self, chat_id: int, dt: datetime) -> None:
+        if str(chat_id) not in self.data:
+            self.add_user(chat_id)
+        self.data[str(chat_id)]['last_refill_at'] = dt.strftime('%Y-%m-%d %H:%M:%S')
+        self.save_data()
+
 user_data = UserData()
 
 #-----------------------------------------------------------------------------------------------------------------------
+
+class GrantState:
+    """Небольшое состояние, чтобы не начислять месячные бонусы повторно при перезапуске."""
+    def __init__(self, filename: str = "grant_state.json"):
+        self.filename = filename
+        self.data = self._load()
+
+    def _load(self) -> Dict[str, str]:
+        try:
+            with open(self.filename, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
+
+    def _save(self) -> None:
+        with open(self.filename, "w", encoding="utf-8") as f:
+            json.dump(self.data, f, ensure_ascii=False, indent=2)
+
+    def get(self, key: str) -> Optional[str]:
+        return self.data.get(key)
+
+    def set(self, key: str, value: str) -> None:
+        self.data[key] = value
+        self._save()
+
+
+grant_state = GrantState()
 
 class StatusData:
     def __init__(self, filename: str = 'status_data.json'):
@@ -509,13 +559,67 @@ def update_payment_data(amount, subscription_type):
 
 async def pidor_doma():
     while True:
-        if 1 == datetime.today().day:
+        today = datetime.today().date()
+        if today.day == 1:
+            # Защита от повторного начисления в тот же день при перезапуске бота
+            last_run = grant_state.get("monthly_15_last_date")
+            if last_run == str(today):
+                await asyncio.sleep(3600)
+                continue
+
             filtered_ids = user_data.get_filtered_user_ids([343465637])
             for pid_chat_id in filtered_ids:
                 if isinstance(await bot.get_chat_member(channel_id, pid_chat_id), ChatMemberMember) or isinstance(
                         await bot.get_chat_member(channel_id, pid_chat_id), ChatMemberOwner):
                     await bot.send_message(pid_chat_id, "Вам добавились 15 ежемесячных вопросов!")
                     user_data.increment_user_questions(pid_chat_id, 15)
+            grant_state.set("monthly_15_last_date", str(today))
+        await asyncio.sleep(86400)
+
+
+async def periodic_30day_refill():
+    """
+    Каждые 30 календарных дней начисляет +5 вопросов и присылает уведомление.
+    Проверка выполняется 1 раз в сутки.
+    """
+    while True:
+        now = datetime.now()
+        # Снимок пользователей, чтобы не ломаться если data меняется
+        user_ids = list(user_data.data.keys())
+        for chat_id_str in user_ids:
+            try:
+                chat_id = int(chat_id_str)
+            except ValueError:
+                continue
+
+            last_refill = user_data.get_last_refill_at(chat_id)
+            if last_refill is None:
+                user_data.set_last_refill_at(chat_id, now)
+                continue
+
+            delta_days = (now.date() - last_refill.date()).days
+            if delta_days < 30:
+                continue
+
+            periods = delta_days // 30
+            if periods <= 0:
+                continue
+
+            add_amount = 5 * periods
+            user_data.increment_user_questions(chat_id, add_amount)
+            # Сдвигаем дату на целые периоды, чтобы не начислять повторно
+            new_last = last_refill + timedelta(days=30 * periods)
+            user_data.set_last_refill_at(chat_id, new_last)
+
+            try:
+                await bot.send_message(
+                    chat_id,
+                    f"Вам начислено {add_amount} вопросов (пополнение раз в 30 дней).",
+                )
+            except Exception:
+                # Пользователь мог заблокировать бота
+                pass
+
         await asyncio.sleep(86400)
 
 #---------------------------------------------------------------------------------------------------------------------------
@@ -1689,20 +1793,50 @@ async def check_sub(message: types.Message, state: FSMContext):
 async def check_sub(message: types.Message, state: FSMContext):
     logger.log_command(message.chat.id, message.text)
     chat_id = message.chat.id
+    static_admins = {491482483, 365515529, 664376580}
+    if not ((chat_id in static_admins) or admin_manager.is_admin(chat_id)):
+        return
     await state.clear()
     await state.set_state(Mess_check.message_id)
-    await bot.send_message(chat_id, "Напишите сообщение для пользователей!", reply_markup=back_kb())
+    await bot.send_message(
+        chat_id,
+        "Отправьте сообщение для рассылки.\n\n"
+        "Можно отправить:\n"
+        "- текст\n"
+        "- текст со ссылкой\n"
+        "- фото с подписью\n\n"
+        "Бот разошлёт это сообщение всем пользователям.",
+        reply_markup=back_kb(),
+    )
 
 @dp.message(Mess_check.message_id)
 async def parse_message(message: types.Message, state: FSMContext):
-    logger.log_command(message.chat.id, message.text)
     chat_id = message.chat.id
-    mes = message.text
+    logger.log_command(chat_id, message.text or "<non-text message>")
+    static_admins = {491482483, 365515529, 664376580}
+    if not ((chat_id in static_admins) or admin_manager.is_admin(chat_id)):
+        await state.clear()
+        return
     await state.clear()
     filtered_ids = user_data.get_filtered_user_ids([chat_id])
+    sent = 0
+    failed = 0
     for pid_chat_id in filtered_ids:
-        await bot.send_message(pid_chat_id, mes, parse_mode='Markdown')
-    await bot.send_message(chat_id, "Сообщения разосланы!", reply_markup=main_kb(message.chat.id))
+        try:
+            # copy_message сохраняет и текст, и ссылки (entities), и фото/видео/документы/подписи
+            await bot.copy_message(
+                chat_id=pid_chat_id,
+                from_chat_id=chat_id,
+                message_id=message.message_id,
+            )
+            sent += 1
+        except Exception:
+            failed += 1
+    await bot.send_message(
+        chat_id,
+        f"Рассылка завершена.\nОтправлено: {sent}\nНе доставлено: {failed}",
+        reply_markup=main_kb(message.chat.id),
+    )
 
 #----------------------------------------------------------------------------------------------------------------------------------
 
@@ -1781,8 +1915,10 @@ async def main():
 
     initialize_payment_file()
     await bot.delete_webhook(drop_pending_updates=True)
+    # Запускаем фоновые задачи до polling, иначе код ниже никогда не выполнится
+    asyncio.create_task(pidor_doma())
+    asyncio.create_task(periodic_30day_refill())
     await dp.start_polling(bot, skip_updates=True)
-    await pidor_doma()
 
 if __name__ == "__main__":
     asyncio.run(main())
