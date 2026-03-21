@@ -590,6 +590,20 @@ async def get_tarot_reading_structured(
         summary = ""
     return {"card_interpretations": ci, "summary": summary.strip()}
 
+
+def structured_is_complete(structured: dict, expected_n: int) -> bool:
+    """Проверяет, что трактовки есть на каждую карту и для нескольких карт есть summary."""
+    ci = structured.get("card_interpretations")
+    summary = (structured.get("summary") or "").strip()
+
+    if not isinstance(ci, list) or len(ci) != expected_n:
+        return False
+    if any(not (isinstance(x, str) and x.strip()) for x in ci):
+        return False
+    if expected_n > 1 and not summary:
+        return False
+    return True
+
 PAYMENT_FILE = "payment_data.json"
 
 def initialize_payment_file():
@@ -933,28 +947,38 @@ async def process_question(message: types.Message, state: FSMContext):
 
         # Структурированный запрос к модели: интерпретации по порядку + summary
         card_meanings_in_order = [tarot_cards[card_path] for card_path in cards12]
-        try:
-            structured = await get_tarot_reading_structured(question_text, card_meanings_in_order)
-        except Exception:
-            await bot.delete_message(chat_id, msg.message_id)
-            await bot.send_message(chat_id, "Не удалось получить трактовку от ИИ. Попробуйте ещё раз позже.", reply_markup=main_kb(message.chat.id))
-            return
+        structured = None
+        last_err = None
+        expected_n = len(cards12)
+        for attempt in range(3):
+            try:
+                structured_try = await get_tarot_reading_structured(question_text, card_meanings_in_order)
+                if structured_is_complete(structured_try, expected_n):
+                    structured = structured_try
+                    break
+            except Exception as e:
+                last_err = e
+            await asyncio.sleep(1 + attempt)
 
         subscription_end = user_data.get_subscription_end(chat_id)
-
-        if not (subscription_end and datetime.now() < subscription_end):
-            user_data.decrement_user_questions(message.chat.id)
+        should_decrement = not (subscription_end and datetime.now() < subscription_end)
 
         await bot.delete_message(chat_id, msg.message_id)
-        per_card_paragraphs = structured.get("card_interpretations") or []
-        summary_paragraph = (structured.get("summary") or "").strip()
-        if any(not (isinstance(x, str) and x.strip()) for x in per_card_paragraphs) or (len(cards12) > 1 and not summary_paragraph):
-            # если ИИ всё равно вернул пустоту — не шлём пустые сообщения и не списываем вопрос
-            if not (subscription_end and datetime.now() < subscription_end):
-                user_data.increment_user_questions(message.chat.id, 1)
-            await bot.send_message(chat_id, "ИИ вернул неполный ответ. Попробуйте повторить расклад.", reply_markup=main_kb(message.chat.id))
+
+        if not structured or not structured_is_complete(structured, expected_n):
+            await bot.send_message(
+                chat_id,
+                "ИИ не смог корректно сформировать трактовку. Попробуйте ещё раз.",
+                reply_markup=main_kb(message.chat.id),
+            )
             await state.clear()
             return
+
+        if should_decrement:
+            user_data.decrement_user_questions(message.chat.id)
+
+        per_card_paragraphs = structured.get("card_interpretations") or []
+        summary_paragraph = (structured.get("summary") or "").strip()
 
         # 1. Перечисление выпавших карт
         names_list = [tarot_cards[card_path] for card_path in cards12]
@@ -1236,11 +1260,26 @@ async def process_question(message: types.Message, state: FSMContext):
             "3-я карта: какие действия предпримет партнер."
         )
         card_meanings_in_order = [tarot_cards[card_path] for card_path in cards12]
-        structured = await get_tarot_reading_structured(
-            question_text,
-            card_meanings_in_order,
-            card_roles_in_order=["Чувства", "Мысли", "Действия"],
-        )
+        expected_n = len(cards12)
+        structured = None
+        for attempt in range(3):
+            try:
+                structured_try = await get_tarot_reading_structured(
+                    question_text,
+                    card_meanings_in_order,
+                    card_roles_in_order=["Чувства", "Мысли", "Действия"],
+                )
+                if structured_is_complete(structured_try, expected_n):
+                    structured = structured_try
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(1 + attempt)
+        if not structured:
+            await bot.delete_message(chat_id, msg.message_id)
+            await bot.send_message(chat_id, "ИИ не смог корректно сформировать трактовку. Попробуйте ещё раз.", reply_markup=main_kb(message.chat.id))
+            await state.clear()
+            return
 
         subscription_end = user_data.get_subscription_end(chat_id)
         if not (subscription_end and datetime.now() < subscription_end):
@@ -1374,11 +1413,26 @@ async def process_question(message: types.Message, state: FSMContext):
             "3-я карта: совет для нейтрализации негативных последствий."
         )
         card_meanings_in_order = [tarot_cards[card_path] for card_path in cards12]
-        structured = await get_tarot_reading_structured(
-            question_text,
-            card_meanings_in_order,
-            card_roles_in_order=["Описание ситуации", "Негативные последствия", "Совет"],
-        )
+        expected_n = len(cards12)
+        structured = None
+        for attempt in range(3):
+            try:
+                structured_try = await get_tarot_reading_structured(
+                    question_text,
+                    card_meanings_in_order,
+                    card_roles_in_order=["Описание ситуации", "Негативные последствия", "Совет"],
+                )
+                if structured_is_complete(structured_try, expected_n):
+                    structured = structured_try
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(1 + attempt)
+        if not structured:
+            await bot.delete_message(chat_id, msg.message_id)
+            await bot.send_message(chat_id, "ИИ не смог корректно сформировать трактовку. Попробуйте ещё раз.", reply_markup=main_kb(message.chat.id))
+            await state.clear()
+            return
 
         subscription_end = user_data.get_subscription_end(chat_id)
         if not (subscription_end and datetime.now() < subscription_end):
