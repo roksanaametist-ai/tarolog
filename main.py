@@ -72,10 +72,12 @@ class Mess_check(StatesGroup):
 
 class romantic(StatesGroup):
     quest = State()
+    question = State()
 
 
 class dangerous(StatesGroup):
     dan = State()
+    question = State()
 
 #-----------------------------------------------------------------------------------------------------------------------
 
@@ -1182,51 +1184,53 @@ async def ask_roman_quest(message: types.Message, state: FSMContext):
     if subscription_end and datetime.now() < subscription_end:
         remaining_days = (subscription_end - datetime.now()).days
         await state.clear()
-        await state.set_state(romantic.quest)
-        await message.answer(f"Подписка активна! "
-                             f"\n"
-                             f"\nОсталось дней: {remaining_days}.")
-        webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
-        builder = ReplyKeyboardBuilder()
-        builder.add(types.KeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
-        builder.adjust(1)
-        await bot.send_message(chat_id, "Чувства Мысли Действия\n\n"
-                                             "В этом разделе ты сможешь узнать чувства, мысли и действия партнера.\n\n"
-                                             "Все просто!\n\n" 
-                                             "МЫСЛЕННО задавай вопрос 🔮\n\n"
-                                             "1-я карта отвечает на вопрос: Что чувствует партнер?\n"
-                                             "2-я карта показывает: О чем думает партнер?\n"
-                                             "3-я карта раскрывает: Какие действия предпримет партнер?\n\n"
-                                             "Если у вас есть физическая колода на руках:\n"
-                                             "Введите 3 карты, которые у вас выпали через запятую 🙌\n\n"
-                                             "Если у вас нет физической колоды:\n"
-                                             "Нажми кнопку в меню «Выбрать карты», и  выберите 3 карты из 7 карт.")
-        await message.answer(text='Выбрать карты:', reply_markup=builder.as_markup(resize_keyboard=True))
+        await state.set_state(romantic.question)
+        await message.answer(
+            f"Подписка активна!\n\nОсталось дней: {remaining_days}."
+        )
     else:
         if subscription_end and datetime.now() > subscription_end:
             await message.answer("Ваша подписка закончилась.")
 
         if user_data.get_user_questions(chat_id) >= 0:
             await state.clear()
-            await state.set_state(romantic.quest)
-            webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
-            builder = ReplyKeyboardBuilder()
-            builder.add(types.KeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
-            builder.adjust(1)
-            await bot.send_message(chat_id, "Чувства Мысли Действия\n\n"
-                                            "В этом разделе ты сможешь узнать чувства, мысли и действия партнера.\n\n"
-                                            "Все просто!\n\n"
-                                            "МЫСЛЕННО задавай вопрос 🔮\n\n"
-                                            "1-я карта отвечает на вопрос: Что чувствует партнер?\n"
-                                            "2-я карта показывает: О чем думает партнер?\n"
-                                            "3-я карта раскрывает: Какие действия предпримет партнер?\n\n"
-                                            "Если у вас есть физическая колода на руках:\n"
-                                            "Введите 3 карты, которые у вас выпали через запятую 🙌\n\n"
-                                            "Если у вас нет физической колоды:\n"
-                                            "Нажми кнопку в меню «Выбрать карты», и  выберите 3 карты из 7 карт.")
-            await message.answer(text='Выбрать карты:', reply_markup=builder.as_markup(resize_keyboard=True))
+            await state.set_state(romantic.question)
         else:
             await bot.send_message(message.chat.id, "У вас закончились вопросы!")
+            return
+
+    # Новый шаг: сначала спрашиваем вопрос, затем даем выбор карт
+    await message.answer(
+        "Напишите ваш вопрос для расклада «Чувства / Мысли / Действия» (про партнера) 👇"
+    )
+
+
+@dp.message(romantic.question)
+async def roman_question_input(message: types.Message, state: FSMContext):
+    chat_id = message.chat.id
+    user_question = (message.text or "").strip()
+    if not user_question:
+        await message.answer("Вопрос не должен быть пустым. Напишите ваш вопрос 👇")
+        return
+
+    await state.update_data({"question": user_question})
+    await state.set_state(romantic.quest)
+
+    webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
+    builder = ReplyKeyboardBuilder()
+    builder.add(types.KeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
+    builder.adjust(1)
+
+    await bot.send_message(
+        chat_id,
+        "Чувства Мысли Действия\n\n"
+        "1-я карта отвечает на вопрос: Что чувствует партнер?\n"
+        "2-я карта показывает: О чем думает партнер?\n"
+        "3-я карта раскрывает: Какие действия предпримет партнер?\n\n"
+        "Если у вас есть физическая колода на руках — введите 3 карты через запятую 🙌\n"
+        "Если колоды нет — нажми «Выбрать карты» и выбери 3 карты из 7.",
+        reply_markup=builder.as_markup(resize_keyboard=True),
+    )
 
 @dp.message(romantic.quest)
 async def process_question(message: types.Message, state: FSMContext):
@@ -1239,7 +1243,20 @@ async def process_question(message: types.Message, state: FSMContext):
 
         msg = await bot.send_message(chat_id, "Происходит магия...")
 
+        data_state = await state.get_data()
+        user_question_input = (data_state.get("question") or "").strip()
         user_question = 'Ответь на эти вопросы 1-я карта отвечает на вопрос: Что чувствует партнер? 2-я карта показывает: О чем думает партнер? 3-я карта раскрывает: Какие действия предпримет партнер? полагаясь на: ' + cardas + '. Напиши расклад и общий расклад. Напиши текст без оформления текста и без введения. Опиши каждую карту и в конце общий расклад, всё по абзацам.'
+        if user_question_input:
+            user_question = (
+                f"Вопрос пользователя: {user_question_input}\n\n"
+                "Ответь на эти вопросы по партнёру: "
+                "1-я карта отвечает на вопрос: Что чувствует партнер? "
+                "2-я карта показывает: О чем думает партнер? "
+                "3-я карта раскрывает: Какие действия предпримет партнер? "
+                f"Полагаясь на: {cardas}. "
+                "Напиши расклад и общий расклад. Напиши текст без оформления текста и без введения. "
+                "Опиши каждую карту и в конце общий расклад, всё по абзацам."
+            )
         tarot_response = await get_tarot_reading(user_question)
         user_data.decrement_user_questions(message.chat.id)
 
@@ -1345,51 +1362,52 @@ async def ask_roman_quest1(message: types.Message, state: FSMContext):
     if subscription_end and datetime.now() < subscription_end:
         remaining_days = (subscription_end - datetime.now()).days
         await state.clear()
-        await state.set_state(dangerous.dan)
-        await message.answer(f"Подписка активна! "
-                             f"\n"
-                             f"\nОсталось дней: {remaining_days}.")
-        webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
-        builder = ReplyKeyboardBuilder()
-        builder.add(types.KeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
-        builder.adjust(1)
-        await bot.send_message(chat_id, "Предупреждение от карт\n\n"
-                                             "В этом разделе ты сможешь узнать предупреждение от карт.\n\n"
-                                             "Все просто!\n\n" 
-                                             "МЫСЛЕННО задавай вопрос 🔮\n\n"
-                                             "1-я карта отвечает на вопрос: Описание ситуации?\n"
-                                             "2-я карта показывает: Возможные негативные последствия?\n"
-                                             "3-я карта раскрывает: Совет для нейтрализации негативных последствий?\n\n"
-                                             "Если у вас есть физическая колода на руках:\n"
-                                             "Введите 3 карты, которые у вас выпали через запятую 🙌\n\n"
-                                             "Если у вас нет физической колоды:\n"
-                                             "Нажми кнопку в меню «Выбрать карты», и  выберите 3 карты из 7 карт.")
-        await message.answer(text='Выбрать карты:', reply_markup=builder.as_markup(resize_keyboard=True))
+        await state.set_state(dangerous.question)
+        await message.answer(
+            f"Подписка активна!\n\nОсталось дней: {remaining_days}."
+        )
     else:
         if subscription_end and datetime.now() > subscription_end:
             await message.answer("Ваша подписка закончилась.")
 
         if user_data.get_user_questions(chat_id) >= 0:
             await state.clear()
-            await state.set_state(dangerous.dan)
-            webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
-            builder = ReplyKeyboardBuilder()
-            builder.add(types.KeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
-            builder.adjust(1)
-            await bot.send_message(chat_id, "Предупреждение от карт\n\n"
-                                            "В этом разделе ты сможешь узнать предупреждение от карт.\n\n"
-                                            "Все просто!\n\n"
-                                            "МЫСЛЕННО задавай вопрос 🔮\n\n"
-                                            "1-я карта отвечает на вопрос: Описание ситуации?\n"
-                                            "2-я карта показывает: Возможные негативные последствия?\n"
-                                            "3-я карта раскрывает: Совет для нейтрализации негативных последствий?\n\n"
-                                            "Если у вас есть физическая колода на руках:\n"
-                                            "Введите 3 карты, которые у вас выпали через запятую 🙌\n\n"
-                                            "Если у вас нет физической колоды:\n"
-                                            "Нажми кнопку в меню «Выбрать карты», и  выберите 3 карты из 7 карт.")
-            await message.answer(text='Выбрать карты:', reply_markup=builder.as_markup(resize_keyboard=True))
+            await state.set_state(dangerous.question)
         else:
             await bot.send_message(message.chat.id, "У вас закончились вопросы!")
+            return
+
+    await message.answer(
+        "Напишите ваш вопрос для расклада «Предупреждение от карт» (про ситуацию) 👇"
+    )
+
+
+@dp.message(dangerous.question)
+async def dangerous_question_input(message: types.Message, state: FSMContext):
+    chat_id = message.chat.id
+    user_question = (message.text or "").strip()
+    if not user_question:
+        await message.answer("Вопрос не должен быть пустым. Напишите ваш вопрос 👇")
+        return
+
+    await state.update_data({"question": user_question})
+    await state.set_state(dangerous.dan)
+
+    webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
+    builder = ReplyKeyboardBuilder()
+    builder.add(types.KeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
+    builder.adjust(1)
+
+    await bot.send_message(
+        chat_id,
+        "Предупреждение от карт\n\n"
+        "1-я карта отвечает на вопрос: Описание ситуации?\n"
+        "2-я карта показывает: Возможные негативные последствия?\n"
+        "3-я карта раскрывает: Совет для нейтрализации негативных последствий?\n\n"
+        "Если есть физическая колода — введите 3 карты через запятую 🙌\n"
+        "Если колоды нет — нажми «Выбрать карты» и выбери 3 карты из 7.",
+        reply_markup=builder.as_markup(resize_keyboard=True),
+    )
 
 @dp.message(dangerous.dan)
 async def process_question(message: types.Message, state: FSMContext):
@@ -1402,7 +1420,21 @@ async def process_question(message: types.Message, state: FSMContext):
 
         msg = await bot.send_message(chat_id, "Происходит магия...")
 
+        data_state = await state.get_data()
+        user_question_input = (data_state.get("question") or "").strip()
         user_question = 'Ответь на эти вопросы 1-я карта отвечает на вопрос: Описание ситуации? 2-я карта показывает: Возможные негативные последствия ? 3-я карта раскрывает: Совет для нейтрализации негативных последствий? полагаясь на: ' + cardas + '. Напиши расклад и общий расклад. Напиши текст без оформления текста и без введения. Опиши каждую карту и в конце общий расклад, всё по абзацам.'
+        if user_question_input:
+            user_question = (
+                f"Вопрос пользователя: {user_question_input}\n\n"
+                "Ответь на эти вопросы по ситуации: "
+                "1-я карта отвечает на вопрос: Описание ситуации. "
+                "2-я карта показывает: Возможные негативные последствия. "
+                "3-я карта раскрывает: Совет для нейтрализации негативных последствий. "
+                f"Полагаясь на: {cardas}. "
+                "Напиши расклад и общий расклад. "
+                "Напиши текст без оформления текста и без введения. "
+                "Опиши каждую карту и в конце общий расклад, всё по абзацам."
+            )
         tarot_response = await get_tarot_reading(user_question)
         user_data.decrement_user_questions(message.chat.id)
 
