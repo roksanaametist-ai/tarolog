@@ -646,8 +646,8 @@ async def pidor_doma():
             for pid_chat_id in filtered_ids:
                 if isinstance(await bot.get_chat_member(channel_id, pid_chat_id), ChatMemberMember) or isinstance(
                         await bot.get_chat_member(channel_id, pid_chat_id), ChatMemberOwner):
-                    await bot.send_message(pid_chat_id, "Вам добавились 15 ежемесячных вопросов!")
-                    user_data.increment_user_questions(pid_chat_id, 15)
+                    await bot.send_message(pid_chat_id, "Вам добавились 5 ежемесячных вопросов!")
+                    user_data.increment_user_questions(pid_chat_id, 5)
             grant_state.set("monthly_15_last_date", str(today))
         await asyncio.sleep(86400)
 
@@ -2083,14 +2083,14 @@ async def check_sub(message: types.Message):
         if isinstance(await bot.get_chat_member(channel_id, chat_id), ChatMemberMember) or isinstance(await bot.get_chat_member(channel_id, chat_id), ChatMemberOwner):
             if status_data.is_status_zero(chat_id):
                 status_data.toggle_status(chat_id)
-                user_data.increment_user_questions(chat_id, 15)
-                await bot.send_message(chat_id, "Вы подписались на канал! Вам добавлено 15 вопросов.\n"
+                user_data.increment_user_questions(chat_id, 5)
+                await bot.send_message(chat_id, "Вы подписались на канал! Вам добавлено 5 вопросов.\n"
                                                 "\n"
-                                                "Следующее пополнение вашего аккаунта на 15 раскладов 1 числа следующего месяца.")
+                                                "Следующее пополнение вашего аккаунта на 5 раскладов 1 числа следующего месяца.")
             else:
                 await bot.send_message(chat_id, "Вопросы уже добавлены.\n"
                                                 "\n"
-                                                "Следующее пополнение вашего аккаунта на 15 раскладов 1 числа следующего месяца.")
+                                                "Следующее пополнение вашего аккаунта на 5 раскладов 1 числа следующего месяца.")
         else:
             await bot.send_message(chat_id,
                                    "Вы не подписаны на канал! Вот ссылка на канал: https://t.me/follow_the_frensy")
