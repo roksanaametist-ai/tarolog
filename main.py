@@ -592,15 +592,15 @@ async def get_tarot_reading_structured(
 
 
 def structured_is_complete(structured: dict, expected_n: int) -> bool:
-    """Проверяет, что трактовки есть на каждую карту и для нескольких карт есть summary."""
+    """Проверяет, что трактовки есть на каждую карту.
+
+    Summary может приходить пустым/не всегда — его при необходимости сгенерируем в обработчике.
+    """
     ci = structured.get("card_interpretations")
-    summary = (structured.get("summary") or "").strip()
 
     if not isinstance(ci, list) or len(ci) != expected_n:
         return False
     if any(not (isinstance(x, str) and x.strip()) for x in ci):
-        return False
-    if expected_n > 1 and not summary:
         return False
     return True
 
@@ -965,20 +965,30 @@ async def process_question(message: types.Message, state: FSMContext):
 
         await bot.delete_message(chat_id, msg.message_id)
 
-        if not structured or not structured_is_complete(structured, expected_n):
-            await bot.send_message(
-                chat_id,
-                "ИИ не смог корректно сформировать трактовку. Попробуйте ещё раз.",
-                reply_markup=main_kb(message.chat.id),
-            )
-            await state.clear()
-            return
+        if not structured:
+            structured = {"card_interpretations": [], "summary": ""}
 
         if should_decrement:
             user_data.decrement_user_questions(message.chat.id)
 
         per_card_paragraphs = structured.get("card_interpretations") or []
+        while len(per_card_paragraphs) < expected_n:
+            per_card_paragraphs.append("")
+        # Гарантируем непустой текст трактовки под каждую карту
+        for idx in range(expected_n):
+            raw = per_card_paragraphs[idx] if idx < len(per_card_paragraphs) else ""
+            if not (isinstance(raw, str) and raw.strip()):
+                per_card_paragraphs[idx] = f"По вашему вопросу карта раскрывает тему: {tarot_cards[cards12[idx]]}."
+
         summary_paragraph = (structured.get("summary") or "").strip()
+        if expected_n > 1 and not summary_paragraph:
+            # Если summary не пришёл — сформируем итог из трактовок карт
+            summary_paragraph = "Суммарно по вашему вопросу карты показывают следующую тенденцию:\n\n" + "\n\n".join(
+                [
+                    f"{idx + 1}. {tarot_cards[cards12[idx]]}: {per_card_paragraphs[idx]}"
+                    for idx in range(expected_n)
+                ]
+            )
 
         # 1. Перечисление выпавших карт
         names_list = [tarot_cards[card_path] for card_path in cards12]
@@ -989,7 +999,7 @@ async def process_question(message: types.Message, state: FSMContext):
         # 2. Для каждой карты отправляем фото и её интерпретацию
         for idx, card_path in enumerate(cards12):
             card_name = tarot_cards[card_path]
-            interp = per_card_paragraphs[idx] if idx < len(per_card_paragraphs) else ""
+            interp = per_card_paragraphs[idx]
             caption = f"Карта {idx + 1}: {card_name}\n\n{interp}".strip()
             await photo_sender.send_photo(
                 message.chat.id,
@@ -1000,7 +1010,7 @@ async def process_question(message: types.Message, state: FSMContext):
             await asyncio.sleep(3)
 
         # 3. Общий итоговый ответ (обязателен, но если модель сломалась — всё равно покажем что есть)
-        if summary_paragraph:
+        if expected_n > 1 and summary_paragraph:
             await bot.send_message(
                 chat_id,
                 f"Итоговый ответ по раскладу:\n\n{summary_paragraph}",
@@ -1253,7 +1263,10 @@ async def process_question(message: types.Message, state: FSMContext):
         msg = await bot.send_message(chat_id, "Происходит магия...")
 
         # Структурированный расклад, чтобы порядок текста не сбивался
+        data_state = await state.get_data()
+        user_question = (data_state.get("question") or "").strip()
         question_text = (
+            f"Вопрос пользователя: {user_question}\n\n"
             "Расклад «Чувства / Мысли / Действия».\n"
             "1-я карта: что чувствует партнер.\n"
             "2-я карта: о чём думает партнер.\n"
@@ -1276,10 +1289,7 @@ async def process_question(message: types.Message, state: FSMContext):
                 pass
             await asyncio.sleep(1 + attempt)
         if not structured:
-            await bot.delete_message(chat_id, msg.message_id)
-            await bot.send_message(chat_id, "ИИ не смог корректно сформировать трактовку. Попробуйте ещё раз.", reply_markup=main_kb(message.chat.id))
-            await state.clear()
-            return
+            structured = {"card_interpretations": [], "summary": ""}
 
         subscription_end = user_data.get_subscription_end(chat_id)
         if not (subscription_end and datetime.now() < subscription_end):
@@ -1290,6 +1300,17 @@ async def process_question(message: types.Message, state: FSMContext):
         summary_paragraph = (structured.get("summary") or "").strip()
         while len(per_card_paragraphs) < len(cards12):
             per_card_paragraphs.append("")
+        for idx in range(expected_n):
+            raw = per_card_paragraphs[idx]
+            if not (isinstance(raw, str) and raw.strip()):
+                per_card_paragraphs[idx] = f"По вашему вопросу карта раскрывает тему: {tarot_cards[cards12[idx]]}."
+        if not summary_paragraph:
+            summary_paragraph = "Итог по раскладу в рамках вопроса:\n\n" + "\n\n".join(
+                [
+                    f"{roles}: {per_card_paragraphs[i]}"
+                    for i, roles in enumerate(["Чувства", "Мысли", "Действия"][:expected_n])
+                ]
+            )
 
         # 1. Перечисление карт (фиксируем названия из словаря, не из ИИ)
         names_list = [tarot_cards[card_path] for card_path in cards12]
@@ -1306,8 +1327,7 @@ async def process_question(message: types.Message, state: FSMContext):
             await asyncio.sleep(3)
 
         # 3. Итог
-        if summary_paragraph:
-            await bot.send_message(chat_id, f"Итоговый ответ по раскладу:\n\n{summary_paragraph}", parse_mode="Markdown")
+        await bot.send_message(chat_id, f"Итоговый ответ по раскладу:\n\n{summary_paragraph}", parse_mode="Markdown")
 
         await bot.send_message(chat_id, "Расклад завершён. Выберите дальнейшее действие:", reply_markup=main_kb(message.chat.id))
         await state.clear()
@@ -1406,7 +1426,10 @@ async def process_question(message: types.Message, state: FSMContext):
         msg = await bot.send_message(chat_id, "Происходит магия...")
 
         # Структурированный расклад, чтобы порядок текста не сбивался
+        data_state = await state.get_data()
+        user_question = (data_state.get("question") or "").strip()
         question_text = (
+            f"Вопрос пользователя: {user_question}\n\n"
             "Расклад «Предупреждение от карт».\n"
             "1-я карта: описание ситуации.\n"
             "2-я карта: возможные негативные последствия.\n"
@@ -1429,10 +1452,7 @@ async def process_question(message: types.Message, state: FSMContext):
                 pass
             await asyncio.sleep(1 + attempt)
         if not structured:
-            await bot.delete_message(chat_id, msg.message_id)
-            await bot.send_message(chat_id, "ИИ не смог корректно сформировать трактовку. Попробуйте ещё раз.", reply_markup=main_kb(message.chat.id))
-            await state.clear()
-            return
+            structured = {"card_interpretations": [], "summary": ""}
 
         subscription_end = user_data.get_subscription_end(chat_id)
         if not (subscription_end and datetime.now() < subscription_end):
@@ -1443,6 +1463,17 @@ async def process_question(message: types.Message, state: FSMContext):
         summary_paragraph = (structured.get("summary") or "").strip()
         while len(per_card_paragraphs) < len(cards12):
             per_card_paragraphs.append("")
+        for idx in range(expected_n):
+            raw = per_card_paragraphs[idx]
+            if not (isinstance(raw, str) and raw.strip()):
+                per_card_paragraphs[idx] = f"По вашему вопросу карта раскрывает тему: {tarot_cards[cards12[idx]]}."
+        if not summary_paragraph:
+            summary_paragraph = "Итог по раскладу в рамках вопроса:\n\n" + "\n\n".join(
+                [
+                    f"{roles}: {per_card_paragraphs[i]}"
+                    for i, roles in enumerate(["Описание ситуации", "Негативные последствия", "Совет"][:expected_n])
+                ]
+            )
 
         # 1. Перечисление карт (фиксируем названия из словаря, не из ИИ)
         names_list = [tarot_cards[card_path] for card_path in cards12]
@@ -1459,8 +1490,7 @@ async def process_question(message: types.Message, state: FSMContext):
             await asyncio.sleep(3)
 
         # 3. Итог
-        if summary_paragraph:
-            await bot.send_message(chat_id, f"Итоговый ответ по раскладу:\n\n{summary_paragraph}", parse_mode="Markdown")
+        await bot.send_message(chat_id, f"Итоговый ответ по раскладу:\n\n{summary_paragraph}", parse_mode="Markdown")
 
         await bot.send_message(chat_id, "Расклад завершён. Выберите дальнейшее действие:", reply_markup=main_kb(message.chat.id))
         await state.clear()
