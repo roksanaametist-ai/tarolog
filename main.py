@@ -811,12 +811,13 @@ async def parse_data(message: types.Message, state: FSMContext):
     await state.update_data({'question': user_question})
 
     webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
-    builder = InlineKeyboardBuilder()
-    builder.add(types.InlineKeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
+    builder = ReplyKeyboardBuilder()
+    builder.add(types.KeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
+    builder.adjust(1)
 
     await state.set_state(Form.cards)
     await bot.send_message(message.chat.id, "Если хотите ввести свои карты, напишите от 3 до 6 карт через запятую!")
-    await message.answer(text='Выбери карты:', reply_markup=builder.as_markup())
+    await message.answer(text='Выбери карты:', reply_markup=builder.as_markup(resize_keyboard=True))
 
 @dp.message(Form.cards)
 async def process_question(message: types.Message, state: FSMContext):
@@ -1024,12 +1025,13 @@ async def parse_data(message: types.Message, state: FSMContext):
     await state.update_data({'question': user_question})
 
     webAppInfo = types.WebAppInfo(url=YESNO_WEBAPP_URL)
-    builder = InlineKeyboardBuilder()
-    builder.add(types.InlineKeyboardButton(text='🃏 Выбрать карту', web_app=webAppInfo))
+    builder = ReplyKeyboardBuilder()
+    builder.add(types.KeyboardButton(text='🃏 Выбрать карту', web_app=webAppInfo))
+    builder.adjust(1)
 
     await state.set_state(Form2.cards)
     await bot.send_message(message.chat.id, "Если хотите ввести свои карту, напишите 1 карту!")
-    await message.answer(text='Выбери карты:', reply_markup=builder.as_markup())
+    await message.answer(text='Выбери карту:', reply_markup=builder.as_markup(resize_keyboard=True))
 
 @dp.message(Form2.cards)
 async def process_question(message: types.Message, state: FSMContext):
@@ -1151,8 +1153,9 @@ async def ask_roman_quest(message: types.Message, state: FSMContext):
                              f"\n"
                              f"\nОсталось дней: {remaining_days}.")
         webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
-        builder = InlineKeyboardBuilder()
-        builder.add(types.InlineKeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
+        builder = ReplyKeyboardBuilder()
+        builder.add(types.KeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
+        builder.adjust(1)
         await bot.send_message(chat_id, "Чувства Мысли Действия\n\n"
                                              "В этом разделе ты сможешь узнать чувства, мысли и действия партнера.\n\n"
                                              "Все просто!\n\n" 
@@ -1164,7 +1167,7 @@ async def ask_roman_quest(message: types.Message, state: FSMContext):
                                              "Введите 3 карты, которые у вас выпали через запятую 🙌\n\n"
                                              "Если у вас нет физической колоды:\n"
                                              "Нажми кнопку в меню «Выбрать карты», и  выберите 3 карты из 7 карт.")
-        await message.answer(text='Выбрать карты:', reply_markup=builder.as_markup())
+        await message.answer(text='Выбрать карты:', reply_markup=builder.as_markup(resize_keyboard=True))
     else:
         if subscription_end and datetime.now() > subscription_end:
             await message.answer("Ваша подписка закончилась.")
@@ -1173,8 +1176,9 @@ async def ask_roman_quest(message: types.Message, state: FSMContext):
             await state.clear()
             await state.set_state(romantic.quest)
             webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
-            builder = InlineKeyboardBuilder()
-            builder.add(types.InlineKeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
+            builder = ReplyKeyboardBuilder()
+            builder.add(types.KeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
+            builder.adjust(1)
             await bot.send_message(chat_id, "Чувства Мысли Действия\n\n"
                                             "В этом разделе ты сможешь узнать чувства, мысли и действия партнера.\n\n"
                                             "Все просто!\n\n"
@@ -1186,7 +1190,7 @@ async def ask_roman_quest(message: types.Message, state: FSMContext):
                                             "Введите 3 карты, которые у вас выпали через запятую 🙌\n\n"
                                             "Если у вас нет физической колоды:\n"
                                             "Нажми кнопку в меню «Выбрать карты», и  выберите 3 карты из 7 карт.")
-            await message.answer(text='Выбрать карты:', reply_markup=builder.as_markup())
+            await message.answer(text='Выбрать карты:', reply_markup=builder.as_markup(resize_keyboard=True))
         else:
             await bot.send_message(message.chat.id, "У вас закончились вопросы!")
 
@@ -1287,8 +1291,9 @@ async def ask_roman_quest1(message: types.Message, state: FSMContext):
                              f"\n"
                              f"\nОсталось дней: {remaining_days}.")
         webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
-        builder = InlineKeyboardBuilder()
-        builder.add(types.InlineKeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
+        builder = ReplyKeyboardBuilder()
+        builder.add(types.KeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
+        builder.adjust(1)
         await bot.send_message(chat_id, "Предупреждение от карт\n\n"
                                              "В этом разделе ты сможешь узнать предупреждение от карт.\n\n"
                                              "Все просто!\n\n" 
@@ -1300,7 +1305,7 @@ async def ask_roman_quest1(message: types.Message, state: FSMContext):
                                              "Введите 3 карты, которые у вас выпали через запятую 🙌\n\n"
                                              "Если у вас нет физической колоды:\n"
                                              "Нажми кнопку в меню «Выбрать карты», и  выберите 3 карты из 7 карт.")
-        await message.answer(text='Выбрать карты:', reply_markup=builder.as_markup())
+        await message.answer(text='Выбрать карты:', reply_markup=builder.as_markup(resize_keyboard=True))
     else:
         if subscription_end and datetime.now() > subscription_end:
             await message.answer("Ваша подписка закончилась.")
@@ -1309,8 +1314,9 @@ async def ask_roman_quest1(message: types.Message, state: FSMContext):
             await state.clear()
             await state.set_state(dangerous.dan)
             webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
-            builder = InlineKeyboardBuilder()
-            builder.add(types.InlineKeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
+            builder = ReplyKeyboardBuilder()
+            builder.add(types.KeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
+            builder.adjust(1)
             await bot.send_message(chat_id, "Предупреждение от карт\n\n"
                                             "В этом разделе ты сможешь узнать предупреждение от карт.\n\n"
                                             "Все просто!\n\n"
@@ -1322,7 +1328,7 @@ async def ask_roman_quest1(message: types.Message, state: FSMContext):
                                             "Введите 3 карты, которые у вас выпали через запятую 🙌\n\n"
                                             "Если у вас нет физической колоды:\n"
                                             "Нажми кнопку в меню «Выбрать карты», и  выберите 3 карты из 7 карт.")
-            await message.answer(text='Выбрать карты:', reply_markup=builder.as_markup())
+            await message.answer(text='Выбрать карты:', reply_markup=builder.as_markup(resize_keyboard=True))
         else:
             await bot.send_message(message.chat.id, "У вас закончились вопросы!")
 
