@@ -173,6 +173,7 @@ async def run_usernames(
 ) -> None:
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     data = load_user_data(user_data_path)
+    started_at = datetime.now()
 
     usernames: list[str] = []
     try:
@@ -208,6 +209,11 @@ async def run_usernames(
         print("Все ники уже обработаны по progress-файлу.")
         return
 
+    print(
+        f"Старт проверки ников: всего={total}, стартовый индекс={start_idx}, dry-run={'да' if dry_run else 'нет'}",
+        flush=True,
+    )
+
     checked = 0
     added = 0
     already_exists = 0
@@ -237,6 +243,10 @@ async def run_usernames(
                             break
                     if secs is None:
                         secs = 10
+                    print(
+                        f"[{idx + 1}/{total}] FloodWait для {username}: пауза {secs + 2} сек",
+                        flush=True,
+                    )
                     await asyncio.sleep(secs + 2)
                     # Повторяем после паузы
                     try:
@@ -281,9 +291,25 @@ async def run_usernames(
                 if not dry_run:
                     save_user_data(user_data_path, data)
 
+                elapsed = max((datetime.now() - started_at).total_seconds(), 1.0)
+                speed = checked / elapsed
+                progress_pct = ((idx + 1) / total) * 100 if total else 100.0
+                print(
+                    (
+                        f"[{idx + 1}/{total}] {progress_pct:.2f}% | "
+                        f"checked={checked}, added={added}, exists={already_exists}, not_found={not_found} | "
+                        f"speed={speed:.2f} ник/сек"
+                    ),
+                    flush=True,
+                )
+
             # rate limit protection
             await asyncio.sleep(random.uniform(delay_min, delay_max))
             if batch_size > 0 and (checked % batch_size == 0):
+                print(
+                    f"[{idx + 1}/{total}] Батч-пауза {pause_seconds} сек (после {checked} проверок)",
+                    flush=True,
+                )
                 await asyncio.sleep(pause_seconds)
 
     finally:
