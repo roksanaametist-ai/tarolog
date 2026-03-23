@@ -149,6 +149,9 @@ class UserData:
         with open(self.filename, 'w') as file:
             json.dump(self.data, file)
 
+    def has_user(self, chat_id: int) -> bool:
+        return str(chat_id) in self.data
+
     def add_user(self, chat_id: int) -> None:
         if str(chat_id) not in self.data:
             # Новый пользователь получает 5 вопросов один раз при первой регистрации
@@ -159,6 +162,9 @@ class UserData:
                 'email': None,
                 # Для автопополнения раз в 30 дней
                 'last_refill_at': now_str,
+                # Реферальная система
+                'referred_by': None,
+                'referrals_count': 0,
             }
             self.save_data()
 
@@ -233,6 +239,40 @@ class UserData:
             self.add_user(chat_id)
         self.data[str(chat_id)]['last_refill_at'] = dt.strftime('%Y-%m-%d %H:%M:%S')
         self.save_data()
+
+    def get_referred_by(self, chat_id: int) -> Optional[int]:
+        val = self.data.get(str(chat_id), {}).get('referred_by')
+        if val is None:
+            return None
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            return None
+
+    def set_referred_by_once(self, chat_id: int, referrer_id: int) -> bool:
+        """
+        Проставляет реферера один раз.
+        Возвращает True, если реферер установлен сейчас.
+        """
+        key = str(chat_id)
+        if key not in self.data:
+            self.add_user(chat_id)
+        if self.data[key].get('referred_by') is not None:
+            return False
+        self.data[key]['referred_by'] = int(referrer_id)
+        self.save_data()
+        return True
+
+    def increment_referrals_count(self, chat_id: int, amount: int = 1) -> None:
+        key = str(chat_id)
+        if key not in self.data:
+            self.add_user(chat_id)
+        current = self.data[key].get('referrals_count', 0)
+        self.data[key]['referrals_count'] = int(current) + amount
+        self.save_data()
+
+    def get_referrals_count(self, chat_id: int) -> int:
+        return int(self.data.get(str(chat_id), {}).get('referrals_count', 0))
 
 user_data = UserData()
 
@@ -741,7 +781,35 @@ async def periodic_30day_refill():
 async def send_welcome(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     logger.log_command(message.chat.id, message.text)
-    user_data.add_user(message.chat.id)
+    chat_id = message.chat.id
+    is_new_user = not user_data.has_user(chat_id)
+    user_data.add_user(chat_id)
+
+    # Реферальный параметр: /start ref_<chat_id>
+    referrer_id = None
+    text = (message.text or "").strip()
+    parts = text.split()
+    if len(parts) > 1:
+        payload = parts[1].strip()
+        if payload.startswith("ref_"):
+            raw_id = payload[4:]
+            if raw_id.isdigit():
+                referrer_id = int(raw_id)
+
+    if is_new_user and referrer_id and referrer_id != chat_id:
+        # Начисляем бонус только один раз за действительно нового пользователя
+        if user_data.set_referred_by_once(chat_id, referrer_id):
+            user_data.add_user(referrer_id)
+            user_data.increment_user_questions(referrer_id, 5)
+            user_data.increment_referrals_count(referrer_id, 1)
+            try:
+                await bot.send_message(
+                    referrer_id,
+                    "По вашей реферальной ссылке пришёл новый пользователь! Вам начислено +5 раскладов.",
+                )
+            except Exception:
+                pass
+
     if not agreement_manager.user_has_agreed(user_id):
         await message.answer("Для предоставления доступа к работе с ботом вам необходимо ознакомиться с доп. соглашением.\n\nОно расположено по ссылке:\n"
                              "https://telegra.ph/Polzovatelskoe-soglashenie-01-21-11",reply_markup=get_agreement_keyboard())
@@ -1552,6 +1620,21 @@ async def how_it_works(message: types.Message):
                          "https://www.youtube.com/shorts/FPpt3rNHXck?si=xGoInzxR6y_OQFky")
 
 
+@dp.message(lambda message: message.text == 'Пригласить друга (+5)')
+async def referral_link(message: types.Message):
+    logger.log_command(message.chat.id, message.text)
+    me = await bot.get_me()
+    chat_id = message.chat.id
+    link = f"https://t.me/{me.username}?start=ref_{chat_id}"
+    invited = user_data.get_referrals_count(chat_id)
+    await message.answer(
+        "Ваша реферальная ссылка:\n"
+        f"{link}\n\n"
+        "За каждого друга, который впервые запустит бота по этой ссылке, вам начисляется +5 раскладов.\n"
+        f"Приглашено друзей: {invited}"
+    )
+
+
 @dp.message(lambda message: message.text == 'Техподдержка')
 async def support(message: types.Message):
     logger.log_command(message.chat.id, message.text)
@@ -1881,6 +1964,7 @@ async def get_stats(message: types.Message):
         '🔮✨Чувства Мысли Действия ✨🔮',
         '🔮✨Предупреждение от карт ✨🔮',
         'Получить дополнительные расклады!',
+        'Пригласить друга (+5)',
         'Индивидуальная консультация',
         'Как работает бот',
         'Техподдержка',
@@ -2007,6 +2091,7 @@ def main_kb(chat_id):
     button_solo_reading = types.KeyboardButton(text='Индивидуальная консультация')
     button_how_it_works = types.KeyboardButton(text='Как работает бот')
     button_support = types.KeyboardButton(text='Техподдержка')
+    button_referral = types.KeyboardButton(text='Пригласить друга (+5)')
     #button_cards = types.KeyboardButton(text='Ежедневные бесплатные прогнозы')
     button_oplata = types.KeyboardButton(text='Оформить подписку')
     button_promo = types.KeyboardButton(text='Промокод')
@@ -2017,6 +2102,7 @@ def main_kb(chat_id):
     builder.row(button_pred)
     builder.row(button_solo_reading, button_oplata)
     builder.row(button_support, button_how_it_works)
+    builder.row(button_referral)
     #демид так и должно быть все ок builder.row(button_cards)
     builder.row(button_promo)
     builder.row(button_dop_question)
