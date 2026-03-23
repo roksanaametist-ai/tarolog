@@ -1574,7 +1574,7 @@ async def process_question(message: types.Message, state: FSMContext):
 
 #-----------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-@dp.message(lambda message: message.text == 'Индивидуальная консультация')
+@dp.message(lambda message: message.text == '👤 Индивидуальная консультация')
 async def solo_reading(message: types.Message):
     logger.log_command(message.chat.id, message.text)
     await message.answer("Заказать индивидуальную консультацию с таро, астрологией, дизайном человека: @RoxanaAmetist")
@@ -1589,7 +1589,7 @@ async def cards(message: types.Message):
                          "https://t.me/follow_the_frensy")
 
 
-@dp.message(lambda message: message.text == 'Как работает бот')
+@dp.message(lambda message: message.text == 'ℹ️ Как работает бот')
 async def how_it_works(message: types.Message):
     logger.log_command(message.chat.id, message.text)
     await message.answer("Как пользоваться ботом ⬇️\n\n"
@@ -1606,7 +1606,7 @@ async def how_it_works(message: types.Message):
                          "https://www.youtube.com/shorts/FPpt3rNHXck?si=xGoInzxR6y_OQFky")
 
 
-@dp.message(lambda message: message.text == 'Пригласить друга (+5)')
+@dp.message(lambda message: message.text == '👥 Пригласить друга (+5)')
 async def referral_link(message: types.Message):
     logger.log_command(message.chat.id, message.text)
     me = await bot.get_me()
@@ -1621,7 +1621,7 @@ async def referral_link(message: types.Message):
     )
 
 
-@dp.message(lambda message: message.text == 'Техподдержка')
+@dp.message(lambda message: message.text == '🛠 Техподдержка')
 async def support(message: types.Message):
     logger.log_command(message.chat.id, message.text)
     await message.answer("Если у вас возникли проблемы с ботом, нажмите /start. "
@@ -1629,7 +1629,7 @@ async def support(message: types.Message):
                          "Если бот так и не заработал в течение 10-15 минут, обратитесь в тех. поддержку @Roxana_Ametist_bot")
 
 
-@dp.message(lambda message: message.text == 'Мой баланс')
+@dp.message(lambda message: message.text == '💎 Мой баланс')
 async def my_balance(message: types.Message):
     logger.log_command(message.chat.id, message.text)
     chat_id = message.chat.id
@@ -1660,7 +1660,7 @@ async def show_agreement(message: types.Message):
 
 YOOTOKEN = os.getenv("YOOTOKEN")
 
-@dp.message(lambda message: message.text == 'Оформить подписку')
+@dp.message(lambda message: message.text == '💳 Оформить подписку')
 async def oplata(message: Message, state: FSMContext):
     logger.log_command(message.chat.id, message.text)
     chat_id = message.chat.id
@@ -1967,16 +1967,16 @@ async def get_stats(message: types.Message):
         '🔮✨Карта дня ✨🔮',
         '🔮✨Чувства Мысли Действия ✨🔮',
         '🔮✨Предупреждение от карт ✨🔮',
-        'Получить дополнительные расклады!',
-        'Пригласить друга (+5)',
-        'Мой баланс',
-        'Индивидуальная консультация',
-        'Как работает бот',
-        'Техподдержка',
-        'Оформить подписку',
-        'Промокод',
-        'Сообщение пользователям',
-        'Назад'
+        '🎁 Получить дополнительные расклады!',
+        '👥 Пригласить друга (+5)',
+        '💎 Мой баланс',
+        '👤 Индивидуальная консультация',
+        'ℹ️ Как работает бот',
+        '🛠 Техподдержка',
+        '💳 Оформить подписку',
+        '🎟 Промокод',
+        '📣 Сообщение пользователям',
+        '◀️ Назад'
     ]
 
     stats_message = f"Дата: {datetime.strptime(input_date, '%Y-%m-%d').strftime('%d.%m.%Y')}\n\n"
@@ -2051,7 +2051,7 @@ valid_promocodes = [
     'pnqdr', 'uaflz', 'ybtlk', 'cxxkr', 'ftxrj'
 ]
 
-@dp.message(lambda message: message.text == 'Промокод')
+@dp.message(lambda message: message.text == '🎟 Промокод')
 async def promos(message: types.Message, state: FSMContext ):
     logger.log_command(message.chat.id, message.text)
     await state.set_state(Promo.prikol)
@@ -2087,21 +2087,21 @@ async def apply_promocode(message: types.Message, state: FSMContext):
 
 def main_kb(chat_id):
     builder = ReplyKeyboardBuilder()
-    button_dop_question = types.KeyboardButton(text='Получить дополнительные расклады!')
+    button_dop_question = types.KeyboardButton(text='🎁 Получить дополнительные расклады!')
     button_ask_question = types.KeyboardButton(text='🔮✨  Задать вопрос  ✨🔮')
     button_day_one = types.KeyboardButton(text='🔮✨Карта дня ✨🔮')
     button_romantic = types.KeyboardButton(text='🔮✨Чувства Мысли Действия ✨🔮')
     button_yesno = types.KeyboardButton(text='🔮✨  Да/Нет  ✨🔮')
     button_pred = types.KeyboardButton(text='🔮✨Предупреждение от карт ✨🔮')
-    button_solo_reading = types.KeyboardButton(text='Индивидуальная консультация')
-    button_balance = types.KeyboardButton(text='Мой баланс')
-    button_how_it_works = types.KeyboardButton(text='Как работает бот')
-    button_support = types.KeyboardButton(text='Техподдержка')
-    button_referral = types.KeyboardButton(text='Пригласить друга (+5)')
+    button_solo_reading = types.KeyboardButton(text='👤 Индивидуальная консультация')
+    button_balance = types.KeyboardButton(text='💎 Мой баланс')
+    button_how_it_works = types.KeyboardButton(text='ℹ️ Как работает бот')
+    button_support = types.KeyboardButton(text='🛠 Техподдержка')
+    button_referral = types.KeyboardButton(text='👥 Пригласить друга (+5)')
     #button_cards = types.KeyboardButton(text='Ежедневные бесплатные прогнозы')
-    button_oplata = types.KeyboardButton(text='Оформить подписку')
-    button_promo = types.KeyboardButton(text='Промокод')
-    button_send_messages = types.KeyboardButton(text='Сообщение пользователям')
+    button_oplata = types.KeyboardButton(text='💳 Оформить подписку')
+    button_promo = types.KeyboardButton(text='🎟 Промокод')
+    button_send_messages = types.KeyboardButton(text='📣 Сообщение пользователям')
     builder.row(button_ask_question)
     builder.row(button_day_one, button_yesno)
     builder.row(button_romantic)
@@ -2121,14 +2121,14 @@ def main_kb(chat_id):
 
 def back_kb():
     builder = ReplyKeyboardBuilder()
-    button_back = types.KeyboardButton(text='Назад')
+    button_back = types.KeyboardButton(text='◀️ Назад')
     builder.row(button_back)
     return builder.as_markup(resize_keyboard=True)
     #lox
 
 #-------------------------------------------------------------------------------------------------------------------------------------------
 
-@dp.message(lambda message: message.text == 'Назад')
+@dp.message(lambda message: message.text == '◀️ Назад')
 async def check_sub(message: types.Message, state: FSMContext):
     logger.log_command(message.chat.id, message.text)
     await state.clear()
@@ -2137,7 +2137,7 @@ async def check_sub(message: types.Message, state: FSMContext):
 
 #---------------------------------------------------------------------------------------------------------------------------
 
-@dp.message(lambda message: message.text == 'Сообщение пользователям')
+@dp.message(lambda message: message.text == '📣 Сообщение пользователям')
 async def check_sub(message: types.Message, state: FSMContext):
     logger.log_command(message.chat.id, message.text)
     chat_id = message.chat.id
@@ -2188,7 +2188,7 @@ async def parse_message(message: types.Message, state: FSMContext):
 
 #----------------------------------------------------------------------------------------------------------------------------------
 
-@dp.message(lambda message: message.text == 'Получить дополнительные расклады!')
+@dp.message(lambda message: message.text == '🎁 Получить дополнительные расклады!')
 async def check_sub(message: types.Message):
     logger.log_command(message.chat.id, message.text)
     chat_id = message.chat.id
