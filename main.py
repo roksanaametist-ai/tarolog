@@ -673,22 +673,8 @@ def update_payment_data(amount, subscription_type):
         json.dump(data, file, indent=4)
 
 async def pidor_doma():
+    """Legacy task отключена: пополнения идут только раз в 30 дней в periodic_30day_refill."""
     while True:
-        today = datetime.today().date()
-        if today.day == 1:
-            # Защита от повторного начисления в тот же день при перезапуске бота
-            last_run = grant_state.get("monthly_15_last_date")
-            if last_run == str(today):
-                await asyncio.sleep(3600)
-                continue
-
-            filtered_ids = user_data.get_filtered_user_ids([343465637])
-            for pid_chat_id in filtered_ids:
-                if isinstance(await bot.get_chat_member(channel_id, pid_chat_id), ChatMemberMember) or isinstance(
-                        await bot.get_chat_member(channel_id, pid_chat_id), ChatMemberOwner):
-                    await bot.send_message(pid_chat_id, "Вам добавились 5 ежемесячных вопросов!")
-                    user_data.increment_user_questions(pid_chat_id, 5)
-            grant_state.set("monthly_15_last_date", str(today))
         await asyncio.sleep(86400)
 
 
@@ -1643,6 +1629,24 @@ async def support(message: types.Message):
                          "Если бот так и не заработал в течение 10-15 минут, обратитесь в тех. поддержку @Roxana_Ametist_bot")
 
 
+@dp.message(lambda message: message.text == 'Мой баланс')
+async def my_balance(message: types.Message):
+    logger.log_command(message.chat.id, message.text)
+    chat_id = message.chat.id
+    questions = user_data.get_user_questions(chat_id)
+    subscription_end = user_data.get_subscription_end(chat_id)
+
+    if subscription_end and datetime.now() < subscription_end:
+        remaining_days = (subscription_end - datetime.now()).days
+        status_line = f"Подписка активна. Осталось дней: {remaining_days}"
+    else:
+        status_line = "Подписка не активна."
+
+    await message.answer(
+        f"Ваш баланс: {questions} вопросов.\n{status_line}"
+    )
+
+
 @dp.message(Command('agreement'))
 async def show_agreement(message: types.Message):
     logger.log_command(message.chat.id, message.text)
@@ -1965,6 +1969,7 @@ async def get_stats(message: types.Message):
         '🔮✨Предупреждение от карт ✨🔮',
         'Получить дополнительные расклады!',
         'Пригласить друга (+5)',
+        'Мой баланс',
         'Индивидуальная консультация',
         'Как работает бот',
         'Техподдержка',
@@ -2089,6 +2094,7 @@ def main_kb(chat_id):
     button_yesno = types.KeyboardButton(text='🔮✨  Да/Нет  ✨🔮')
     button_pred = types.KeyboardButton(text='🔮✨Предупреждение от карт ✨🔮')
     button_solo_reading = types.KeyboardButton(text='Индивидуальная консультация')
+    button_balance = types.KeyboardButton(text='Мой баланс')
     button_how_it_works = types.KeyboardButton(text='Как работает бот')
     button_support = types.KeyboardButton(text='Техподдержка')
     button_referral = types.KeyboardButton(text='Пригласить друга (+5)')
@@ -2100,6 +2106,7 @@ def main_kb(chat_id):
     builder.row(button_day_one, button_yesno)
     builder.row(button_romantic)
     builder.row(button_pred)
+    builder.row(button_balance)
     builder.row(button_solo_reading, button_oplata)
     builder.row(button_support, button_how_it_works)
     builder.row(button_referral)
@@ -2193,11 +2200,11 @@ async def check_sub(message: types.Message):
                 user_data.increment_user_questions(chat_id, 5)
                 await bot.send_message(chat_id, "Вы подписались на канал! Вам добавлено 5 вопросов.\n"
                                                 "\n"
-                                                "Следующее пополнение вашего аккаунта на 5 раскладов 1 числа следующего месяца.")
+                                                "Следующее пополнение вашего аккаунта на 5 раскладов через 30 дней.")
             else:
                 await bot.send_message(chat_id, "Вопросы уже добавлены.\n"
                                                 "\n"
-                                                "Следующее пополнение вашего аккаунта на 5 раскладов 1 числа следующего месяца.")
+                                                "Следующее пополнение вашего аккаунта на 5 раскладов через 30 дней.")
         else:
             await bot.send_message(chat_id,
                                    "Вы не подписаны на канал! Вот ссылка на канал: https://t.me/follow_the_frensy")
@@ -2256,8 +2263,7 @@ async def main():
 
     initialize_payment_file()
     await bot.delete_webhook(drop_pending_updates=True)
-    # Запускаем фоновые задачи до polling, иначе код ниже никогда не выполнится
-    asyncio.create_task(pidor_doma())
+    # Запускаем фоновую задачу пополнения раз в 30 дней
     asyncio.create_task(periodic_30day_refill())
     await dp.start_polling(bot, skip_updates=True)
 
