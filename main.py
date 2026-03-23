@@ -1574,7 +1574,7 @@ async def process_question(message: types.Message, state: FSMContext):
 
 #-----------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-@dp.message(lambda message: message.text == '👤 Индивидуальная консультация')
+@dp.message(lambda message: message.text == '👤 Консультация')
 async def solo_reading(message: types.Message):
     logger.log_command(message.chat.id, message.text)
     await message.answer("Заказать индивидуальную консультацию с таро, астрологией, дизайном человека: @RoxanaAmetist")
@@ -1970,7 +1970,7 @@ async def get_stats(message: types.Message):
         '🎁 Получить дополнительные расклады!',
         '👥 Пригласить друга (+5)',
         '💎 Мой баланс',
-        '👤 Индивидуальная консультация',
+        '👤 Консультация',
         'ℹ️ Как работает бот',
         '🛠 Техподдержка',
         '💳 Оформить подписку',
@@ -2093,7 +2093,7 @@ def main_kb(chat_id):
     button_romantic = types.KeyboardButton(text='🔮✨Чувства Мысли Действия ✨🔮')
     button_yesno = types.KeyboardButton(text='🔮✨  Да/Нет  ✨🔮')
     button_pred = types.KeyboardButton(text='🔮✨Предупреждение от карт ✨🔮')
-    button_solo_reading = types.KeyboardButton(text='👤 Индивидуальная консультация')
+    button_solo_reading = types.KeyboardButton(text='👤 Консультация')
     button_balance = types.KeyboardButton(text='💎 Мой баланс')
     button_how_it_works = types.KeyboardButton(text='ℹ️ Как работает бот')
     button_support = types.KeyboardButton(text='🛠 Техподдержка')
@@ -2107,7 +2107,8 @@ def main_kb(chat_id):
     builder.row(button_romantic)
     builder.row(button_pred)
     builder.row(button_balance)
-    builder.row(button_solo_reading, button_oplata)
+    builder.row(button_solo_reading)
+    builder.row(button_oplata)
     builder.row(button_support, button_how_it_works)
     builder.row(button_referral)
     #демид так и должно быть все ок builder.row(button_cards)
