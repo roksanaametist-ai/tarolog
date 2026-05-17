@@ -305,6 +305,259 @@ class GrantState:
 
 grant_state = GrantState()
 
+# ----------------------------------------------------------------------------------------------------------------------
+# Дожим до оплаты подписки (нажали «Оформить подписку» / получили ссылку YooKassa)
+
+PAYMENT_NURTURE_FILE = "payment_nurture.json"
+
+PLAN_LABELS = {
+    "sub_10_169": "10 запросов — 169 ₽",
+    "sub_7d_399": "Месяц безлимит — 359 ₽",
+    "sub_14d_499": "3 месяца безлимит — 999 ₽",
+    "sub_30d_699": "Год безлимит — 2999 ₽",
+}
+
+NURTURE_DELAYS_INTENT = (
+    timedelta(minutes=30),
+    timedelta(hours=24),
+    timedelta(hours=72),
+)
+
+NURTURE_DELAYS_CHECKOUT = (
+    timedelta(hours=1),
+    timedelta(hours=24),
+    timedelta(hours=48),
+)
+
+
+class PaymentNurtureStore:
+    def __init__(self, filename: str = PAYMENT_NURTURE_FILE):
+        self.filename = filename
+        self.data: Dict[str, dict] = self._load()
+
+    def _load(self) -> Dict[str, dict]:
+        try:
+            with open(self.filename, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
+
+    def _save(self) -> None:
+        with open(self.filename, "w", encoding="utf-8") as f:
+            json.dump(self.data, f, ensure_ascii=False, indent=2)
+
+    def set_intent(self, chat_id: int) -> None:
+        if self._is_completed(chat_id):
+            return
+        self.data[str(chat_id)] = {
+            "stage": "intent",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "step_sent": 0,
+            "completed": False,
+        }
+        self._save()
+
+    def set_checkout(
+        self,
+        chat_id: int,
+        payment_id: str,
+        confirmation_url: str,
+        plan_key: str,
+        selected_price: int,
+    ) -> None:
+        self.data[str(chat_id)] = {
+            "stage": "checkout",
+            "payment_id": payment_id,
+            "confirmation_url": confirmation_url,
+            "plan_key": plan_key,
+            "plan_label": PLAN_LABELS.get(plan_key, "Подписка"),
+            "selected_price": selected_price,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "step_sent": 0,
+            "completed": False,
+        }
+        self._save()
+
+    def mark_completed(self, chat_id: int) -> None:
+        key = str(chat_id)
+        if key in self.data:
+            self.data[key]["completed"] = True
+            self._save()
+
+    def _is_completed(self, chat_id: int) -> bool:
+        rec = self.data.get(str(chat_id))
+        return bool(rec and rec.get("completed"))
+
+    def iter_active(self):
+        for chat_id_str, rec in list(self.data.items()):
+            if rec.get("completed"):
+                continue
+            yield chat_id_str, rec
+
+    def bump_step(self, chat_id: int) -> None:
+        key = str(chat_id)
+        if key in self.data:
+            self.data[key]["step_sent"] = int(self.data[key].get("step_sent", 0)) + 1
+            self._save()
+
+
+payment_nurture = PaymentNurtureStore()
+
+
+def configure_yookassa() -> None:
+    Configuration.account_id = int(os.getenv("YOOKASSA_ACCOUNT_ID"))
+    Configuration.secret_key = os.getenv("YOOKASSA_SECRET_KEY")
+
+
+def user_has_active_subscription(chat_id: int) -> bool:
+    end = user_data.get_subscription_end(chat_id)
+    return bool(end and datetime.now() < end)
+
+
+async def apply_subscription_payment(chat_id: int, selected_price: int) -> bool:
+    """Начисляет подписку/вопросы после успешной оплаты YooKassa."""
+    prices = {16900: "10", 35900: "31d", 99900: "93d", 299900: "365d"}
+    selected_type = prices.get(selected_price)
+    if not selected_type:
+        return False
+
+    if selected_type == "10":
+        user_data.increment_user_questions(chat_id, 10)
+    elif selected_type == "31d":
+        user_data.extend_subscription(chat_id, days=31)
+    elif selected_type == "93d":
+        user_data.extend_subscription(chat_id, days=93)
+    elif selected_type == "365d":
+        user_data.extend_subscription(chat_id, days=365)
+    else:
+        return False
+
+    update_payment_data(selected_price, selected_type)
+    payment_nurture.mark_completed(chat_id)
+    return True
+
+
+async def send_nurture_intent(chat_id: int, step: int) -> None:
+    texts = [
+        (
+            "Вы начали оформление подписки 🔮\n\n"
+            "Остался один шаг — выберите тариф ниже. После оплаты безлимитные расклады "
+            "откроются сразу."
+        ),
+        (
+            "Напоминание: вы смотрели тарифы подписки ✨\n\n"
+            "С подпиской не нужно считать оставшиеся вопросы — все расклады доступны без лимита."
+        ),
+        (
+            "Последнее напоминание по подписке.\n\n"
+            "Если остались вопросы по оплате — напишите в 🛠 Техподдержку. "
+            "Или выберите тариф, когда будете готовы."
+        ),
+    ]
+    if step >= len(texts):
+        return
+    await bot.send_message(chat_id, texts[step], reply_markup=sub())
+
+
+async def send_nurture_checkout(chat_id: int, rec: dict, step: int) -> None:
+    plan = rec.get("plan_label", "Подписка")
+    url = rec.get("confirmation_url", "")
+    texts = [
+        (
+            f"Напоминание: ссылка на оплату «{plan}» всё ещё активна 💳\n\n"
+            "Если страница закрылась — нажмите кнопку ниже и завершите оплату."
+        ),
+        (
+            f"Безлимитная подписка «{plan}» открывает все расклады без ограничений: "
+            "карта дня, отношения, да/нет, предупреждение ✨\n\n"
+            "Завершите оплату, когда будет удобно."
+        ),
+        (
+            f"Последнее напоминание по оплате «{plan}».\n\n"
+            "Ссылка ниже — если передумали, просто проигнорируйте это сообщение."
+        ),
+    ]
+    if step >= len(texts):
+        return
+    markup = InlineKeyboardBuilder()
+    if url:
+        markup.row(types.InlineKeyboardButton(text="💳 Перейти к оплате", url=url))
+    markup.row(
+        types.InlineKeyboardButton(text="📋 Выбрать другой тариф", callback_data="nurture_pick_plan")
+    )
+    await bot.send_message(chat_id, texts[step], reply_markup=markup.as_markup())
+
+
+async def try_complete_pending_payment(chat_id: int, rec: dict) -> bool:
+    payment_id = rec.get("payment_id")
+    selected_price = rec.get("selected_price")
+    if not payment_id or not selected_price:
+        return False
+    try:
+        configure_yookassa()
+        zakaz = Payment.find_one(payment_id)
+        if zakaz.status == "succeeded":
+            await apply_subscription_payment(chat_id, int(selected_price))
+            await bot.send_message(
+                chat_id,
+                "Оплата прошла успешно! Вам выдана подписка 🎉",
+                reply_markup=main_kb(chat_id),
+            )
+            return True
+    except Exception:
+        pass
+    return False
+
+
+async def payment_nurture_loop():
+    """Фоновые напоминания тем, кто начал покупку подписки, но не оплатил."""
+    await asyncio.sleep(60)
+    while True:
+        now = datetime.now()
+        for chat_id_str, rec in list(payment_nurture.iter_active()):
+            try:
+                chat_id = int(chat_id_str)
+            except ValueError:
+                continue
+
+            if user_has_active_subscription(chat_id):
+                payment_nurture.mark_completed(chat_id)
+                continue
+
+            stage = rec.get("stage", "intent")
+            created_raw = rec.get("created_at")
+            if not created_raw:
+                continue
+            try:
+                created = datetime.strptime(created_raw, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+
+            if stage == "checkout":
+                if await try_complete_pending_payment(chat_id, rec):
+                    continue
+
+            step = int(rec.get("step_sent", 0))
+            delays = NURTURE_DELAYS_CHECKOUT if stage == "checkout" else NURTURE_DELAYS_INTENT
+            if step >= len(delays):
+                payment_nurture.mark_completed(chat_id)
+                continue
+
+            if now < created + delays[step]:
+                continue
+
+            try:
+                if stage == "checkout":
+                    await send_nurture_checkout(chat_id, rec, step)
+                else:
+                    await send_nurture_intent(chat_id, step)
+                payment_nurture.bump_step(chat_id)
+            except Exception:
+                pass
+
+        await asyncio.sleep(600)
+
+
 class StatusData:
     def __init__(self, filename: str = 'status_data.json'):
         self.filename = filename
@@ -1664,6 +1917,8 @@ YOOTOKEN = os.getenv("YOOTOKEN")
 async def oplata(message: Message, state: FSMContext):
     logger.log_command(message.chat.id, message.text)
     chat_id = message.chat.id
+    if not user_has_active_subscription(chat_id):
+        payment_nurture.set_intent(chat_id)
     email = user_data.get_user_email(chat_id)
     if email:
         await message.answer("Выбери актуальную подписку для себя:", reply_markup=sub())
@@ -1682,6 +1937,8 @@ async def email_box(message: Message, state: FSMContext):
     email_notvalid = message.text
     try:
         user_data.set_user_email(chat_id, email_notvalid)
+        if not user_has_active_subscription(chat_id):
+            payment_nurture.set_intent(chat_id)
         await message.answer("Email установлен. Выберите подписку.", reply_markup=sub())
         await state.clear()
     except ValueError:
@@ -1719,13 +1976,10 @@ async def submonth(call: CallbackQuery):
         "sub_30d_699": 299900,
     }
     selected_price = prices.get(call.data, 15000)
+    plan_key = call.data
     await call.message.delete()
 
-    idempotence_key = str(uuid.uuid4())
-
-    Configuration.account_id = int(os.getenv("YOOKASSA_ACCOUNT_ID"))
-
-    Configuration.secret_key = os.getenv("YOOKASSA_SECRET_KEY")
+    configure_yookassa()
 
     email = user_data.get_user_email(chat_id)
 
@@ -1765,41 +2019,49 @@ async def submonth(call: CallbackQuery):
     }, idempotence_key)
 
     confirmation_url = payment.confirmation.confirmation_url
-    await bot.send_message(chat_id=message.chat.id, text="Ссылка на оплату подписки: "
-                                                         f"\n {confirmation_url}")
     payment_id = payment.id
 
-    await check_payment_status(payment_id, message.chat.id, selected_price)
+    payment_nurture.set_checkout(
+        chat_id,
+        payment_id=payment_id,
+        confirmation_url=confirmation_url,
+        plan_key=plan_key,
+        selected_price=selected_price,
+    )
+
+    pay_kb = InlineKeyboardBuilder()
+    pay_kb.row(types.InlineKeyboardButton(text="💳 Оплатить сейчас", url=confirmation_url))
+    await bot.send_message(
+        chat_id=message.chat.id,
+        text=(
+            f"Оплата: {PLAN_LABELS.get(plan_key, 'Подписка')}\n\n"
+            "Нажмите кнопку ниже — откроется безопасная страница YooKassa."
+        ),
+        reply_markup=pay_kb.as_markup(),
+    )
+
+    asyncio.create_task(check_payment_status(payment_id, message.chat.id, selected_price))
+
+
+@dp.callback_query(F.data == "nurture_pick_plan")
+async def nurture_pick_plan(call: CallbackQuery):
+    await call.answer()
+    chat_id = call.message.chat.id
+    if user_has_active_subscription(chat_id):
+        await call.message.answer("У вас уже активна подписка ✨", reply_markup=main_kb(chat_id))
+        payment_nurture.mark_completed(chat_id)
+        return
+    await call.message.answer("Выберите тариф:", reply_markup=sub())
+
 
 async def check_payment_status(payment_id, chat_id, selected_price):
+    configure_yookassa()
     for _ in range(60):
         zakaz = Payment.find_one(payment_id)
 
-
-# 33900: "30",
-
-
         if zakaz.status == "succeeded":
-            inv_pay = selected_price
-            prices = {16900: "10", 35900: "31d", 99900: "93d", 299900: "365d"}
-            selected_type = prices.get(inv_pay)
-
-
-#elif selected_type == "30":
-    #user_data.increment_user_questions(chat_id, 30)
-
-
-            if selected_type == "10":
-                user_data.increment_user_questions(chat_id, 10)
-            elif selected_type == "31d":
-                user_data.extend_subscription(chat_id, days=31)
-            elif selected_type == "93d":
-                user_data.extend_subscription(chat_id, days=93)
-            elif selected_type == "365d":
-                user_data.extend_subscription(chat_id, days=365)
-
-            update_payment_data(inv_pay, selected_type)
-            await bot.send_message(chat_id, f"Вам выдана подписка!", reply_markup=main_kb(chat_id))
+            if await apply_subscription_payment(chat_id, selected_price):
+                await bot.send_message(chat_id, "Вам выдана подписка!", reply_markup=main_kb(chat_id))
             return
 
         elif zakaz.status == "canceled":
@@ -1807,7 +2069,11 @@ async def check_payment_status(payment_id, chat_id, selected_price):
             return
         await asyncio.sleep(10)
 
-    await bot.send_message(chat_id, "Платеж не был завершен или отменен. Проверьте статус на сайте.")
+    await bot.send_message(
+        chat_id,
+        "Оплата пока не поступила. Если вы уже оплатили — подписка активируется автоматически в течение нескольких минут.\n"
+        "Или нажмите «💳 Оформить подписку» и откройте ссылку снова.",
+    )
 
 
 @dp.pre_checkout_query(F.invoice_payload == "demo")
@@ -2266,6 +2532,7 @@ async def main():
     await bot.delete_webhook(drop_pending_updates=True)
     # Запускаем фоновую задачу пополнения раз в 30 дней
     asyncio.create_task(periodic_30day_refill())
+    asyncio.create_task(payment_nurture_loop())
     await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
