@@ -1936,10 +1936,9 @@ async def solo_reading(message: types.Message):
 @dp.message(lambda message: message.text == 'Ежедневные бесплатные прогнозы')
 async def cards(message: types.Message):
     logger.log_command(message.chat.id, message.text)
-    await message.answer("Подпишись для бесплатных ежедневных прогнозов на день: "
-                         "\n"
-                         "\n"
-                         CHANNEL_URL)
+    await message.answer(
+        f"Подпишись для бесплатных ежедневных прогнозов на день:\n\n{CHANNEL_URL}"
+    )
 
 
 @dp.message(lambda message: message.text == 'ℹ️ Как работает бот')
