@@ -39,6 +39,7 @@ YESNO_WEBAPP_URL = "https://followthefrensy.ru/yesno"
 CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/follow_the_frensy").strip()
 GROUP_INVITE_URL = os.getenv("GROUP_INVITE_URL", "").strip()
 GROUP_BUTTON_TEXT = "👥 Наша группа"
+BACK_BUTTON_TEXT = "◀️ Назад"
 
 channel_id = -1001887928983
 BOT_STATIC_ADMINS = {491482483}
@@ -536,7 +537,7 @@ async def send_referral_info(chat_id: int) -> None:
             f"За каждого друга, который впервые запустит бота по этой ссылке, вам начисляется +5 раскладов.\n"
             f"Приглашено друзей: {invited}"
         ),
-        reply_markup=main_kb(chat_id),
+        reply_markup=back_kb(),
     )
 
 
@@ -881,6 +882,28 @@ async def ensure_bot_admin(message: types.Message) -> bool:
         return True
     await message.answer("Нет доступа.")
     return False
+
+
+@dp.message(F.text == BACK_BUTTON_TEXT)
+async def go_back_to_main_menu(message: types.Message, state: FSMContext):
+    logger.log_command(message.chat.id, message.text)
+    await state.clear()
+    await message.answer("Вернулись в главное меню", reply_markup=main_kb(message.chat.id))
+
+
+@dp.callback_query(F.data == "back_to_main")
+async def callback_back_to_main(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+    await bot.send_message(
+        call.message.chat.id,
+        "Вернулись в главное меню",
+        reply_markup=main_kb(call.message.chat.id),
+    )
 
 
 def load_payment_stats() -> Optional[dict]:
@@ -1536,21 +1559,22 @@ async def ask_question(message: types.Message, state: FSMContext):
         remaining_days = (subscription_end - datetime.now()).days
         await state.clear()
         await state.set_state(Form.question)
-        await message.answer(f"Подписка активна! "
-                             f"\n"
-                             f"\nОсталось дней: {remaining_days}. "
-                             f"\n"
-                             f"\nНапишите свой вопрос: 👇")
+        await message.answer(
+            f"Подписка активна!\n\nОсталось дней: {remaining_days}.\n\nНапишите свой вопрос: 👇",
+            reply_markup=back_kb(),
+        )
     else:
         if subscription_end and datetime.now() > subscription_end:
-            await message.answer("Ваша подписка закончилась.")
+            await message.answer("Ваша подписка закончилась.", reply_markup=back_kb())
 
         if user_data.get_user_questions(chat_id) >= 0:
             await state.clear()
             await state.set_state(Form.question)
-            await message.answer("Напишите свой вопрос для расклада: 👇")
+            await message.answer("Напишите свой вопрос для расклада: 👇", reply_markup=back_kb())
         else:
-            await bot.send_message(message.chat.id, "У вас закончились вопросы!")
+            await bot.send_message(
+                message.chat.id, "У вас закончились вопросы!", reply_markup=back_kb()
+            )
 
 
 @dp.message(Form.question)
@@ -1559,14 +1583,13 @@ async def parse_data(message: types.Message, state: FSMContext):
     user_question = message.text
     await state.update_data({'question': user_question})
 
-    webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
-    builder = ReplyKeyboardBuilder()
-    builder.add(types.KeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
-    builder.adjust(1)
-
     await state.set_state(Form.cards)
-    await bot.send_message(message.chat.id, "Если хотите ввести свои карты, напишите от 3 до 6 карт через запятую!")
-    await message.answer(text='Выбери карты:', reply_markup=builder.as_markup(resize_keyboard=True))
+    await bot.send_message(
+        message.chat.id,
+        "Если хотите ввести свои карты, напишите от 3 до 6 карт через запятую!",
+        reply_markup=back_kb(),
+    )
+    await message.answer(text="Выбери карты:", reply_markup=webapp_cards_kb(CARDS_WEBAPP_URL))
 
 @dp.message(Form.cards)
 async def process_question(message: types.Message, state: FSMContext):
@@ -1615,21 +1638,26 @@ async def ask_question(message: types.Message, state: FSMContext):
         remaining_days = (subscription_end - datetime.now()).days
         await state.clear()
         await state.set_state(Form2.question)
-        await message.answer(f"Подписка активна! "
-                             f"\n"
-                             f"\nОсталось дней: {remaining_days}. "
-                             f"\n"
-                             f"\nНапишите свой вопрос, на который хотите узнать ответ, да или нет: 👇")
+        await message.answer(
+            f"Подписка активна!\n\nОсталось дней: {remaining_days}.\n\n"
+            f"Напишите свой вопрос, на который хотите узнать ответ, да или нет: 👇",
+            reply_markup=back_kb(),
+        )
     else:
         if subscription_end and datetime.now() > subscription_end:
-            await message.answer("Ваша подписка закончилась.")
+            await message.answer("Ваша подписка закончилась.", reply_markup=back_kb())
 
         if user_data.get_user_questions(chat_id) >= 0:
             await state.clear()
             await state.set_state(Form2.question)
-            await message.answer("Напишите свой вопрос, на который хотите узнать ответ, да или нет: 👇")
+            await message.answer(
+                "Напишите свой вопрос, на который хотите узнать ответ, да или нет: 👇",
+                reply_markup=back_kb(),
+            )
         else:
-            await bot.send_message(message.chat.id, "У вас закончились вопросы!")
+            await bot.send_message(
+                message.chat.id, "У вас закончились вопросы!", reply_markup=back_kb()
+            )
 
 
 @dp.message(Form2.question)
@@ -1638,14 +1666,16 @@ async def parse_data(message: types.Message, state: FSMContext):
     user_question = message.text
     await state.update_data({'question': user_question})
 
-    webAppInfo = types.WebAppInfo(url=YESNO_WEBAPP_URL)
-    builder = ReplyKeyboardBuilder()
-    builder.add(types.KeyboardButton(text='🃏 Выбрать карту', web_app=webAppInfo))
-    builder.adjust(1)
-
     await state.set_state(Form2.cards)
-    await bot.send_message(message.chat.id, "Если хотите ввести свои карту, напишите 1 карту!")
-    await message.answer(text='Выбери карту:', reply_markup=builder.as_markup(resize_keyboard=True))
+    await bot.send_message(
+        message.chat.id,
+        "Если хотите ввести свою карту, напишите 1 карту!",
+        reply_markup=back_kb(),
+    )
+    await message.answer(
+        text="Выбери карту:",
+        reply_markup=webapp_cards_kb(YESNO_WEBAPP_URL, pick_label="🃏 Выбрать карту"),
+    )
 
 @dp.message(Form2.cards)
 async def process_question(message: types.Message, state: FSMContext):
@@ -1714,10 +1744,16 @@ async def one_day_start(message: types.Message):
     one_card.add_chat(chat_id)
     if one_card.update_date_if_needed(chat_id):
         builder = InlineKeyboardBuilder()
-        builder.add(types.InlineKeyboardButton(text='Получить карту дня', callback_data="card_day_one"))
-        await message.answer("Карта дня покажет как пройдёт твой сегодняшний день!", reply_markup=builder.as_markup())
+        builder.row(
+            types.InlineKeyboardButton(text="Получить карту дня", callback_data="card_day_one")
+        )
+        builder.row(types.InlineKeyboardButton(text=BACK_BUTTON_TEXT, callback_data="back_to_main"))
+        await message.answer(
+            "Карта дня покажет как пройдёт твой сегодняшний день!",
+            reply_markup=builder.as_markup(),
+        )
     else:
-        await message.answer("Вы уже получили карту дня!")
+        await message.answer("Вы уже получили карту дня!", reply_markup=back_kb())
 
 @dp.callback_query(lambda call: call.data.startswith("card_day_"))
 async def one_day_finish(call: CallbackQuery):
@@ -1750,50 +1786,53 @@ async def ask_roman_quest(message: types.Message, state: FSMContext):
         remaining_days = (subscription_end - datetime.now()).days
         await state.clear()
         await state.set_state(romantic.quest)
-        await message.answer(f"Подписка активна! "
-                             f"\n"
-                             f"\nОсталось дней: {remaining_days}.")
-        webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
-        builder = ReplyKeyboardBuilder()
-        builder.add(types.KeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
-        builder.adjust(1)
-        await bot.send_message(chat_id, "Чувства Мысли Действия\n\n"
-                                             "В этом разделе ты сможешь узнать чувства, мысли и действия партнера.\n\n"
-                                             "Все просто!\n\n"
-                                             "МЫСЛЕННО задавай вопрос 🔮\n\n"
-                                             "1-я карта отвечает на вопрос: Что чувствует партнер?\n"
-                                             "2-я карта показывает: О чем думает партнер?\n"
-                                             "3-я карта раскрывает: Какие действия предпримет партнер?\n\n"
-                                             "Если у вас есть физическая колода на руках:\n"
-                                             "Введите 3 карты, которые у вас выпали через запятую 🙌\n\n"
-                                             "Если у вас нет физической колоды:\n"
-                                             "Нажми кнопку в меню «Выбрать карты», и  выберите 3 карты из 7 карт.")
-        await message.answer(text='Выбрать карты:', reply_markup=builder.as_markup(resize_keyboard=True))
+        await message.answer(
+            f"Подписка активна!\n\nОсталось дней: {remaining_days}.",
+            reply_markup=back_kb(),
+        )
+        await bot.send_message(
+            chat_id,
+            "Чувства Мысли Действия\n\n"
+            "В этом разделе ты сможешь узнать чувства, мысли и действия партнера.\n\n"
+            "Все просто!\n\n"
+            "МЫСЛЕННО задавай вопрос 🔮\n\n"
+            "1-я карта отвечает на вопрос: Что чувствует партнер?\n"
+            "2-я карта показывает: О чем думает партнер?\n"
+            "3-я карта раскрывает: Какие действия предпримет партнер?\n\n"
+            "Если у вас есть физическая колода на руках:\n"
+            "Введите 3 карты, которые у вас выпали через запятую 🙌\n\n"
+            "Если у вас нет физической колоды:\n"
+            "Нажми кнопку в меню «Выбрать карты», и выберите 3 карты из 7 карт.",
+            reply_markup=back_kb(),
+        )
+        await message.answer(text="Выбрать карты:", reply_markup=webapp_cards_kb(CARDS_WEBAPP_URL))
     else:
         if subscription_end and datetime.now() > subscription_end:
-            await message.answer("Ваша подписка закончилась.")
+            await message.answer("Ваша подписка закончилась.", reply_markup=back_kb())
 
         if user_data.get_user_questions(chat_id) >= 0:
             await state.clear()
             await state.set_state(romantic.quest)
-            webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
-            builder = ReplyKeyboardBuilder()
-            builder.add(types.KeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
-            builder.adjust(1)
-            await bot.send_message(chat_id, "Чувства Мысли Действия\n\n"
-                                            "В этом разделе ты сможешь узнать чувства, мысли и действия партнера.\n\n"
-                                            "Все просто!\n\n"
-                                            "МЫСЛЕННО задавай вопрос 🔮\n\n"
-                                            "1-я карта отвечает на вопрос: Что чувствует партнер?\n"
-                                            "2-я карта показывает: О чем думает партнер?\n"
-                                            "3-я карта раскрывает: Какие действия предпримет партнер?\n\n"
-                                            "Если у вас есть физическая колода на руках:\n"
-                                            "Введите 3 карты, которые у вас выпали через запятую 🙌\n\n"
-                                            "Если у вас нет физической колоды:\n"
-                                            "Нажми кнопку в меню «Выбрать карты», и  выберите 3 карты из 7 карт.")
-            await message.answer(text='Выбрать карты:', reply_markup=builder.as_markup(resize_keyboard=True))
+            await bot.send_message(
+                chat_id,
+                "Чувства Мысли Действия\n\n"
+                "В этом разделе ты сможешь узнать чувства, мысли и действия партнера.\n\n"
+                "Все просто!\n\n"
+                "МЫСЛЕННО задавай вопрос 🔮\n\n"
+                "1-я карта отвечает на вопрос: Что чувствует партнер?\n"
+                "2-я карта показывает: О чем думает партнер?\n"
+                "3-я карта раскрывает: Какие действия предпримет партнер?\n\n"
+                "Если у вас есть физическая колода на руках:\n"
+                "Введите 3 карты, которые у вас выпали через запятую 🙌\n\n"
+                "Если у вас нет физической колоды:\n"
+                "Нажми кнопку в меню «Выбрать карты», и выберите 3 карты из 7 карт.",
+                reply_markup=back_kb(),
+            )
+            await message.answer(text="Выбрать карты:", reply_markup=webapp_cards_kb(CARDS_WEBAPP_URL))
         else:
-            await bot.send_message(message.chat.id, "У вас закончились вопросы!")
+            await bot.send_message(
+                message.chat.id, "У вас закончились вопросы!", reply_markup=back_kb()
+            )
 
 @dp.message(romantic.quest)
 async def process_question(message: types.Message, state: FSMContext):
@@ -1843,50 +1882,53 @@ async def ask_roman_quest1(message: types.Message, state: FSMContext):
         remaining_days = (subscription_end - datetime.now()).days
         await state.clear()
         await state.set_state(dangerous.dan)
-        await message.answer(f"Подписка активна! "
-                             f"\n"
-                             f"\nОсталось дней: {remaining_days}.")
-        webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
-        builder = ReplyKeyboardBuilder()
-        builder.add(types.KeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
-        builder.adjust(1)
-        await bot.send_message(chat_id, "Предупреждение от карт\n\n"
-                                             "В этом разделе ты сможешь узнать предупреждение от карт.\n\n"
-                                             "Все просто!\n\n"
-                                             "МЫСЛЕННО задавай вопрос 🔮\n\n"
-                                             "1-я карта отвечает на вопрос: Описание ситуации?\n"
-                                             "2-я карта показывает: Возможные негативные последствия?\n"
-                                             "3-я карта раскрывает: Совет для нейтрализации негативных последствий?\n\n"
-                                             "Если у вас есть физическая колода на руках:\n"
-                                             "Введите 3 карты, которые у вас выпали через запятую 🙌\n\n"
-                                             "Если у вас нет физической колоды:\n"
-                                             "Нажми кнопку в меню «Выбрать карты», и  выберите 3 карты из 7 карт.")
-        await message.answer(text='Выбрать карты:', reply_markup=builder.as_markup(resize_keyboard=True))
+        await message.answer(
+            f"Подписка активна!\n\nОсталось дней: {remaining_days}.",
+            reply_markup=back_kb(),
+        )
+        await bot.send_message(
+            chat_id,
+            "Предупреждение от карт\n\n"
+            "В этом разделе ты сможешь узнать предупреждение от карт.\n\n"
+            "Все просто!\n\n"
+            "МЫСЛЕННО задавай вопрос 🔮\n\n"
+            "1-я карта отвечает на вопрос: Описание ситуации?\n"
+            "2-я карта показывает: Возможные негативные последствия?\n"
+            "3-я карта раскрывает: Совет для нейтрализации негативных последствий?\n\n"
+            "Если у вас есть физическая колода на руках:\n"
+            "Введите 3 карты, которые у вас выпали через запятую 🙌\n\n"
+            "Если у вас нет физической колоды:\n"
+            "Нажми кнопку в меню «Выбрать карты», и выберите 3 карты из 7 карт.",
+            reply_markup=back_kb(),
+        )
+        await message.answer(text="Выбрать карты:", reply_markup=webapp_cards_kb(CARDS_WEBAPP_URL))
     else:
         if subscription_end and datetime.now() > subscription_end:
-            await message.answer("Ваша подписка закончилась.")
+            await message.answer("Ваша подписка закончилась.", reply_markup=back_kb())
 
         if user_data.get_user_questions(chat_id) >= 0:
             await state.clear()
             await state.set_state(dangerous.dan)
-            webAppInfo = types.WebAppInfo(url=CARDS_WEBAPP_URL)
-            builder = ReplyKeyboardBuilder()
-            builder.add(types.KeyboardButton(text='🃏 Выбрать карты', web_app=webAppInfo))
-            builder.adjust(1)
-            await bot.send_message(chat_id, "Предупреждение от карт\n\n"
-                                            "В этом разделе ты сможешь узнать предупреждение от карт.\n\n"
-                                            "Все просто!\n\n"
-                                            "МЫСЛЕННО задавай вопрос 🔮\n\n"
-                                            "1-я карта отвечает на вопрос: Описание ситуации?\n"
-                                            "2-я карта показывает: Возможные негативные последствия?\n"
-                                            "3-я карта раскрывает: Совет для нейтрализации негативных последствий?\n\n"
-                                            "Если у вас есть физическая колода на руках:\n"
-                                            "Введите 3 карты, которые у вас выпали через запятую 🙌\n\n"
-                                            "Если у вас нет физической колоды:\n"
-                                            "Нажми кнопку в меню «Выбрать карты», и  выберите 3 карты из 7 карт.")
-            await message.answer(text='Выбрать карты:', reply_markup=builder.as_markup(resize_keyboard=True))
+            await bot.send_message(
+                chat_id,
+                "Предупреждение от карт\n\n"
+                "В этом разделе ты сможешь узнать предупреждение от карт.\n\n"
+                "Все просто!\n\n"
+                "МЫСЛЕННО задавай вопрос 🔮\n\n"
+                "1-я карта отвечает на вопрос: Описание ситуации?\n"
+                "2-я карта показывает: Возможные негативные последствия?\n"
+                "3-я карта раскрывает: Совет для нейтрализации негативных последствий?\n\n"
+                "Если у вас есть физическая колода на руках:\n"
+                "Введите 3 карты, которые у вас выпали через запятую 🙌\n\n"
+                "Если у вас нет физической колоды:\n"
+                "Нажми кнопку в меню «Выбрать карты», и выберите 3 карты из 7 карт.",
+                reply_markup=back_kb(),
+            )
+            await message.answer(text="Выбрать карты:", reply_markup=webapp_cards_kb(CARDS_WEBAPP_URL))
         else:
-            await bot.send_message(message.chat.id, "У вас закончились вопросы!")
+            await bot.send_message(
+                message.chat.id, "У вас закончились вопросы!", reply_markup=back_kb()
+            )
 
 @dp.message(dangerous.dan)
 async def process_question(message: types.Message, state: FSMContext):
@@ -1928,14 +1970,18 @@ async def process_question(message: types.Message, state: FSMContext):
 @dp.message(lambda message: message.text == '👤 Консультация')
 async def solo_reading(message: types.Message):
     logger.log_command(message.chat.id, message.text)
-    await message.answer("Заказать индивидуальную консультацию с таро, астрологией, дизайном человека: @RoxanaAmetist")
+    await message.answer(
+        "Заказать индивидуальную консультацию с таро, астрологией, дизайном человека: @RoxanaAmetist",
+        reply_markup=back_kb(),
+    )
 
 
 @dp.message(lambda message: message.text == 'Ежедневные бесплатные прогнозы')
 async def cards(message: types.Message):
     logger.log_command(message.chat.id, message.text)
     await message.answer(
-        f"Подпишись для бесплатных ежедневных прогнозов на день:\n\n{CHANNEL_URL}"
+        f"Подпишись для бесплатных ежедневных прогнозов на день:\n\n{CHANNEL_URL}",
+        reply_markup=back_kb(),
     )
 
 
@@ -1953,7 +1999,8 @@ async def how_it_works(message: types.Message):
                          "Ссылка на видео инструкцию по использованию бота:"
                          "\n"
                          "\n"
-                         "https://www.youtube.com/shorts/FPpt3rNHXck?si=xGoInzxR6y_OQFky")
+                         "https://www.youtube.com/shorts/FPpt3rNHXck?si=xGoInzxR6y_OQFky",
+                         reply_markup=back_kb())
 
 
 @dp.message(lambda message: message.text == GROUP_BUTTON_TEXT)
@@ -1961,11 +2008,13 @@ async def our_group(message: types.Message):
     logger.log_command(message.chat.id, message.text)
     if GROUP_INVITE_URL:
         await message.answer(
-            f"Вступайте в нашу группу — там анонсы, обсуждения и дополнительные материалы:\n{GROUP_INVITE_URL}"
+            f"Вступайте в нашу группу — там анонсы, обсуждения и дополнительные материалы:\n{GROUP_INVITE_URL}",
+            reply_markup=back_kb(),
         )
     else:
         await message.answer(
-            "Ссылка на группу пока не настроена. Администратор может добавить GROUP_INVITE_URL в .env на сервере."
+            "Ссылка на группу пока не настроена. Администратор может добавить GROUP_INVITE_URL в .env на сервере.",
+            reply_markup=back_kb(),
         )
 
 
@@ -1978,9 +2027,12 @@ async def referral_link(message: types.Message):
 @dp.message(lambda message: message.text == '🛠 Техподдержка')
 async def support(message: types.Message):
     logger.log_command(message.chat.id, message.text)
-    await message.answer("Если у вас возникли проблемы с ботом, нажмите /start. "
-                         "\n"
-                         "Если бот так и не заработал в течение 10-15 минут, обратитесь в тех. поддержку @Roxana_Ametist_bot")
+    await message.answer(
+        "Если у вас возникли проблемы с ботом, нажмите /start. "
+        "\n"
+        "Если бот так и не заработал в течение 10-15 минут, обратитесь в тех. поддержку @Roxana_Ametist_bot",
+        reply_markup=back_kb(),
+    )
 
 
 @dp.message(lambda message: message.text == '💎 Мой баланс')
@@ -1997,7 +2049,8 @@ async def my_balance(message: types.Message):
         status_line = "Подписка не активна."
 
     await message.answer(
-        f"Ваш баланс: {questions} вопросов.\n{status_line}"
+        f"Ваш баланс: {questions} вопросов.\n{status_line}",
+        reply_markup=back_kb(),
     )
 
 
@@ -2032,7 +2085,8 @@ async def oplata(message: Message, state: FSMContext):
             "\n"
             "\n"
             "Введите почту."
-            + REFERRAL_HINT
+            + REFERRAL_HINT,
+            reply_markup=back_kb(),
         )
 
         await state.set_state(Email.email_check)
@@ -2054,7 +2108,10 @@ async def email_box(message: Message, state: FSMContext):
     except ValueError:
         await state.clear()
         await state.set_state(Email.email_check)
-        await message.answer("Email не установлен. Введите корректный email.")
+        await message.answer(
+            "Email не установлен. Введите корректный email.",
+            reply_markup=back_kb(),
+        )
 
 
 def sub():
@@ -2070,6 +2127,7 @@ def sub():
     markup.row(sub3)
     markup.row(sub4)
     markup.row(sub5)
+    markup.row(types.InlineKeyboardButton(text=BACK_BUTTON_TEXT, callback_data="back_to_main"))
 
     return markup.as_markup()
 
@@ -2142,6 +2200,7 @@ async def submonth(call: CallbackQuery):
     pay_kb = InlineKeyboardBuilder()
     pay_kb.row(types.InlineKeyboardButton(text="💳 Оплатить сейчас", url=confirmation_url))
     pay_kb.row(types.InlineKeyboardButton(text="👥 Пригласить друга (+5)", callback_data="nurture_referral"))
+    pay_kb.row(types.InlineKeyboardButton(text=BACK_BUTTON_TEXT, callback_data="back_to_main"))
     await bot.send_message(
         chat_id=message.chat.id,
         text=(
@@ -2411,7 +2470,7 @@ async def get_stats(message: types.Message):
         '🎟 Промокод',
         '📣 Сообщение пользователям',
         ADMIN_STATS_BUTTON,
-        '◀️ Назад'
+        BACK_BUTTON_TEXT
     ]
 
     stats_message = f"Дата: {datetime.strptime(input_date, '%Y-%m-%d').strftime('%d.%m.%Y')}\n\n"
@@ -2492,7 +2551,7 @@ valid_promocodes = [
 async def promos(message: types.Message, state: FSMContext ):
     logger.log_command(message.chat.id, message.text)
     await state.set_state(Promo.prikol)
-    await message.answer("Если у вас есть промокод, то введите его")
+    await message.answer("Если у вас есть промокод, то введите его", reply_markup=back_kb())
 
 
 @dp.message(Promo.prikol)
@@ -2503,7 +2562,10 @@ async def apply_promocode(message: types.Message, state: FSMContext):
     if message.text in valid_promocodes:
         # Проверяем, использовал ли пользователь промокод ранее
         if chat_id in used_promocodes and message.text in used_promocodes[chat_id]:
-            await message.answer("Вы уже использовали этот промокод. Пожалуйста, попробуйте другой. ⚠️")
+            await message.answer(
+                "Вы уже использовали этот промокод. Пожалуйста, попробуйте другой. ⚠️",
+                reply_markup=main_kb(chat_id),
+            )
         else:
             # Начисляем вопросы и сохраняем информацию об использовании промокода
             user_data.increment_user_questions(chat_id, 1000)
@@ -2513,9 +2575,15 @@ async def apply_promocode(message: types.Message, state: FSMContext):
                 used_promocodes[chat_id] = []
             used_promocodes[chat_id].append(message.text)
 
-            await message.answer("Промокод активирован! Вам начислено 100 вопросов 🎉")
+            await message.answer(
+                "Промокод активирован! Вам начислено 100 вопросов 🎉",
+                reply_markup=main_kb(chat_id),
+            )
     else:
-        await message.answer("Некорректный промокод. Пожалуйста, попробуйте еще раз ⚠️")
+        await message.answer(
+            "Некорректный промокод. Пожалуйста, попробуйте еще раз ⚠️",
+            reply_markup=back_kb(),
+        )
 
 
 
@@ -2562,19 +2630,17 @@ def main_kb(chat_id):
 
 def back_kb():
     builder = ReplyKeyboardBuilder()
-    button_back = types.KeyboardButton(text='◀️ Назад')
-    builder.row(button_back)
+    builder.row(types.KeyboardButton(text=BACK_BUTTON_TEXT))
     return builder.as_markup(resize_keyboard=True)
-    #lox
 
-#-------------------------------------------------------------------------------------------------------------------------------------------
 
-@dp.message(lambda message: message.text == '◀️ Назад')
-async def check_sub(message: types.Message, state: FSMContext):
-    logger.log_command(message.chat.id, message.text)
-    await state.clear()
-    chat_id = message.chat.id
-    await bot.send_message(chat_id, "Вернулись в главное меню", reply_markup=main_kb(message.chat.id))
+def webapp_cards_kb(webapp_url: str, pick_label: str = "🃏 Выбрать карты"):
+    builder = ReplyKeyboardBuilder()
+    builder.row(
+        types.KeyboardButton(text=pick_label, web_app=types.WebAppInfo(url=webapp_url))
+    )
+    builder.row(types.KeyboardButton(text=BACK_BUTTON_TEXT))
+    return builder.as_markup(resize_keyboard=True)
 
 #---------------------------------------------------------------------------------------------------------------------------
 
@@ -2631,7 +2697,11 @@ async def parse_message(message: types.Message, state: FSMContext):
 async def check_sub(message: types.Message):
     logger.log_command(message.chat.id, message.text)
     chat_id = message.chat.id
-    await bot.send_message(message.chat.id, f"Текущий баланс:{user_data.get_user_questions(message.chat.id)}")
+    await bot.send_message(
+        message.chat.id,
+        f"Текущий баланс:{user_data.get_user_questions(message.chat.id)}",
+        reply_markup=back_kb(),
+    )
     try:
         if isinstance(await bot.get_chat_member(channel_id, chat_id), ChatMemberMember) or isinstance(await bot.get_chat_member(channel_id, chat_id), ChatMemberOwner):
             if status_data.is_status_zero(chat_id):
