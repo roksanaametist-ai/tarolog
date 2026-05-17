@@ -41,10 +41,12 @@ GROUP_INVITE_URL = os.getenv("GROUP_INVITE_URL", "").strip()
 GROUP_BUTTON_TEXT = "👥 Наша группа"
 BACK_BUTTON_TEXT = "◀️ Назад"
 CONSULTATION_BUTTON_TEXT = "✨ Консультация эзотерика (платно)"
-CONSULTATION_URL = os.getenv("CONSULTATION_URL", "https://t.me/RoxanaAmetist").strip()
+CONSULTATION_URL = os.getenv("CONSULTATION_URL", "https://t.me/roxanaametist").strip()
 CONSULTATION_MESSAGE = (
-    "Индивидуальная платная консультация: таро, астрология, дизайн человека.\n\n"
-    f"Записаться и узнать стоимость — напишите Роксане:\n{CONSULTATION_URL}"
+    "Приглашаем на индивидуальную платную консультацию ✨\n\n"
+    "Таро, астрология, дизайн человека — персональный разбор вашей ситуации.\n\n"
+    "Для записи и уточнения стоимости напишите Роксане в Telegram:\n"
+    "https://t.me/roxanaametist"
 )
 
 channel_id = -1001887928983
@@ -1983,15 +1985,14 @@ async def process_question(message: types.Message, state: FSMContext):
 #-----------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 @dp.message(F.text == CONSULTATION_BUTTON_TEXT)
-async def solo_reading(message: types.Message):
+async def solo_reading(message: types.Message, state: FSMContext):
     logger.log_command(message.chat.id, message.text)
     consult_kb = InlineKeyboardBuilder()
-    consult_kb.row(consultation_inline_button())
-    await message.answer(
-        CONSULTATION_MESSAGE,
-        reply_markup=consult_kb.as_markup(),
+    consult_kb.row(
+        types.InlineKeyboardButton(text="💬 Записаться на консультацию", url=CONSULTATION_URL)
     )
-    await message.answer("Выберите действие:", reply_markup=back_kb())
+    await message.answer(CONSULTATION_MESSAGE, reply_markup=consult_kb.as_markup())
+    await message.answer("◀️ В главное меню — кнопка «Назад» ниже.", reply_markup=back_kb())
 
 
 @dp.message(lambda message: message.text == 'Ежедневные бесплатные прогнозы')
