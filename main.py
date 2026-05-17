@@ -942,8 +942,49 @@ def build_admin_dashboard_html() -> str:
         f"<b>📅 Сегодня (клики в боте)</b>\n"
         f"  • «Оформить подписку»: <b>{today_sub}</b>\n"
         f"  • «Пригласить друга»: <b>{today_ref}</b>\n\n"
-        f"<i>Команды: /stats_date123 · /denginam · /{ADMIN_CMD_TOTAL_USERS}</i>"
+        f"<i>Команды: /who ID · /stats_date123 · /denginam · /{ADMIN_CMD_TOTAL_USERS}</i>"
     )
+
+
+def format_user_lookup(target_id: int) -> str:
+    key = str(target_id)
+    u = user_data.data.get(key)
+    lines = [f"<b>Пользователь</b> <code>{target_id}</code>\n"]
+
+    if not u:
+        lines.append("В <code>user_data.json</code> не найден.\n")
+    else:
+        username = u.get("username") or "—"
+        if username != "—" and not str(username).startswith("@"):
+            username = f"@{username}"
+        lines.extend(
+            [
+                f"Username: <b>{username}</b>\n",
+                f"Имя: {u.get('first_name') or '—'}\n",
+                f"Фамилия: {u.get('last_name') or '—'}\n",
+                f"Телефон: {u.get('phone') or '—'}\n",
+                f"Email: {u.get('email') or '—'}\n",
+                f"Вопросов: <b>{u.get('questions', 0)}</b>\n",
+                f"Подписка до: {u.get('subscription_end') or 'нет'}\n",
+                f"Реферер id: {u.get('referred_by') or '—'}\n",
+                f"Приглашено друзей: <b>{u.get('referrals_count', 0)}</b>\n",
+                f"Последнее пополнение: {u.get('last_refill_at') or '—'}\n",
+            ]
+        )
+        if u.get("imported_from_usernames"):
+            lines.append("Источник: импорт по username\n")
+        if u.get("imported_from_user_txt"):
+            lines.append("Источник: импорт user.txt\n")
+
+    logs = logger.get_user_stats(target_id)
+    if logs:
+        lines.append(f"\n<b>Лог бота</b> (всего записей: {len(logs)})\n")
+        for entry in logs[-8:]:
+            lines.append(f"• {entry.get('command', '—')} — {entry.get('date', '—')}\n")
+    else:
+        lines.append("\nВ <code>logs.json</code> записей нет — возможно, не писал боту.\n")
+
+    return "".join(lines)
 
 
 async def send_html_chunks(chat_id: int, html: str, chunk_size: int = 4000) -> None:
@@ -2141,6 +2182,25 @@ async def check_payment_status(payment_id, chat_id, selected_price):
 @dp.pre_checkout_query(F.invoice_payload == "demo")
 async def process_pre_checkout_query(query: PreCheckoutQuery):
     await query.answer(ok=True)
+
+
+@dp.message(Command("who"))
+async def admin_who(message: types.Message):
+    if not await ensure_bot_admin(message):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        await message.answer(
+            "Формат: <code>/who telegram_id</code>\nПример: <code>/who 365515529</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    try:
+        target_id = int(parts[1])
+    except ValueError:
+        await message.answer("Укажите числовой Telegram id.")
+        return
+    await message.answer(format_user_lookup(target_id), parse_mode=ParseMode.HTML)
 
 
 @dp.message(Command("admin123"))
