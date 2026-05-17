@@ -1985,7 +1985,7 @@ async def process_question(message: types.Message, state: FSMContext):
 #-----------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 @dp.message(F.text == CONSULTATION_BUTTON_TEXT)
-async def solo_reading(message: types.Message, state: FSMContext):
+async def solo_reading(message: types.Message):
     logger.log_command(message.chat.id, message.text)
     consult_kb = InlineKeyboardBuilder()
     consult_kb.row(
