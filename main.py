@@ -48,6 +48,9 @@ CONSULTATION_MESSAGE = (
     "Для записи и уточнения стоимости напишите Роксане в Telegram:\n"
     "https://t.me/roxanaametist"
 )
+CONSULTATION_VIDEO_PATH = os.getenv(
+    "CONSULTATION_VIDEO_PATH", "static/consultation.mp4"
+).strip()
 
 channel_id = -1001887928983
 BOT_STATIC_ADMINS = {491482483}
@@ -1984,15 +1987,32 @@ async def process_question(message: types.Message, state: FSMContext):
 
 #-----------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-@dp.message(F.text == CONSULTATION_BUTTON_TEXT)
-async def solo_reading(message: types.Message):
-    logger.log_command(message.chat.id, message.text)
+async def send_consultation_invite(chat_id: int) -> None:
     consult_kb = InlineKeyboardBuilder()
     consult_kb.row(
         types.InlineKeyboardButton(text="💬 Записаться на консультацию", url=CONSULTATION_URL)
     )
-    await message.answer(CONSULTATION_MESSAGE, reply_markup=consult_kb.as_markup())
-    await message.answer("◀️ В главное меню — кнопка «Назад» ниже.", reply_markup=back_kb())
+    markup = consult_kb.as_markup()
+    if os.path.isfile(CONSULTATION_VIDEO_PATH):
+        await bot.send_video(
+            chat_id,
+            FSInputFile(CONSULTATION_VIDEO_PATH),
+            caption=CONSULTATION_MESSAGE,
+            reply_markup=markup,
+        )
+    else:
+        await bot.send_message(chat_id, CONSULTATION_MESSAGE, reply_markup=markup)
+    await bot.send_message(
+        chat_id,
+        "◀️ В главное меню — кнопка «Назад» ниже.",
+        reply_markup=back_kb(),
+    )
+
+
+@dp.message(F.text == CONSULTATION_BUTTON_TEXT)
+async def solo_reading(message: types.Message):
+    logger.log_command(message.chat.id, message.text)
+    await send_consultation_invite(message.chat.id)
 
 
 @dp.message(lambda message: message.text == 'Ежедневные бесплатные прогнозы')
