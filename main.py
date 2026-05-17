@@ -9,7 +9,7 @@ from aiogram.filters import CommandStart, Command
 from aiogram.handlers import CallbackQueryHandler
 import asyncio
 import json
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 from aiogram.enums import ParseMode
 import re
 from aiogram.types import FSInputFile, ChatMemberMember, ChatMemberOwner
@@ -333,6 +333,22 @@ NURTURE_DELAYS_CHECKOUT = (
     timedelta(hours=24),
     timedelta(hours=48),
 )
+
+ROMANTIC_SPREAD_QUESTION = (
+    "Расклад «Чувства / Мысли / Действия».\n"
+    "1-я карта: что чувствует партнер.\n"
+    "2-я карта: о чём думает партнер.\n"
+    "3-я карта: какие действия предпримет партнер."
+)
+ROMANTIC_CARD_ROLES = ["Чувства", "Мысли", "Действия"]
+
+DANGEROUS_SPREAD_QUESTION = (
+    "Расклад «Предупреждение от карт».\n"
+    "1-я карта: описание ситуации.\n"
+    "2-я карта: возможные негативные последствия.\n"
+    "3-я карта: совет для нейтрализации негативных последствий."
+)
+DANGEROUS_CARD_ROLES = ["Описание ситуации", "Негативные последствия", "Совет"]
 
 
 class PaymentNurtureStore:
@@ -804,8 +820,14 @@ async def get_tarot_reading(user_message):
             response = client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=[
-                    {"role": "system", "content": "You are a tarot reader who provides insightful and mystical interpretations of tarot card spreads."},
-                    {"role": "user", "content": user_message}
+                    {
+                        "role": "system",
+                        "content": (
+                            "Ты опытный таролог. Даёшь точные, бережные трактовки на русском языке. "
+                            "Следуй формату запроса пользователя."
+                        ),
+                    },
+                    {"role": "user", "content": user_message},
                 ],
             )
             content = response.choices[0].message.content
@@ -849,7 +871,7 @@ async def get_tarot_reading_structured(
         return (
             "Вопрос пользователя:\n"
             f"{question}\n\n"
-            "Карты (строго по порядку; это значения карт, не названия):\n"
+            "Карты (строго по порядку; названия выпавших карт):\n"
             + "\n".join(lines)
             + "\n\n"
               "Ответь СТРОГО в JSON без Markdown и без лишнего текста, в одну строку.\n"
@@ -924,6 +946,157 @@ def structured_is_complete(structured: dict, expected_n: int) -> bool:
     if any(not (isinstance(x, str) and x.strip()) for x in ci):
         return False
     return True
+
+
+def _should_decrement_questions(chat_id: int) -> bool:
+    subscription_end = user_data.get_subscription_end(chat_id)
+    return not (subscription_end and datetime.now() < subscription_end)
+
+
+def _tarot_name_to_path() -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+    for path, name in tarot_cards.items():
+        mapping[name.lower()] = path
+    return mapping
+
+
+def parse_comma_separated_cards(text: str) -> List[Dict[str, Any]]:
+    """Парсит карты из ручного ввода; сопоставляет с колодой бота, если название совпало."""
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    name_to_path = _tarot_name_to_path()
+    cards: List[Dict[str, Any]] = []
+    for part in parts:
+        key = part.lower()
+        path = name_to_path.get(key)
+        if not path:
+            for name_key, card_path in name_to_path.items():
+                if key in name_key or name_key in key:
+                    path = card_path
+                    break
+        label = tarot_cards[path] if path else part
+        cards.append({"path": path, "label": label})
+    return cards
+
+
+def cards_from_webapp_paths(paths: List[str]) -> List[Dict[str, Any]]:
+    return [{"path": p, "label": tarot_cards[p]} for p in paths]
+
+
+async def fetch_structured_reading(
+    question_text: str,
+    card_labels: List[str],
+    card_roles: Optional[List[str]] = None,
+) -> dict:
+    structured = None
+    expected_n = len(card_labels)
+    for attempt in range(3):
+        try:
+            structured_try = await get_tarot_reading_structured(
+                question_text, card_labels, card_roles_in_order=card_roles
+            )
+            if structured_is_complete(structured_try, expected_n):
+                structured = structured_try
+                break
+        except Exception:
+            pass
+        await asyncio.sleep(1 + attempt)
+    if not structured:
+        structured = {"card_interpretations": [], "summary": ""}
+    return structured
+
+
+async def deliver_structured_spread(
+    chat_id: int,
+    question_text: str,
+    cards: List[Dict[str, Any]],
+    card_roles: Optional[List[str]] = None,
+    *,
+    decrement_balance: bool = True,
+    yes_no_mode: bool = False,
+    role_labels_for_fallback: Optional[List[str]] = None,
+    show_card_list_header: bool = True,
+    compact_single_card: bool = False,
+) -> None:
+    expected_n = len(cards)
+    if expected_n == 0:
+        await bot.send_message(chat_id, "Не удалось распознать карты. Повторите ввод.")
+        return
+
+    prompt = question_text
+    if yes_no_mode:
+        prompt += (
+            "\n\nВажно: в поле summary сначала напиши однозначный ответ «Да» или «Нет», "
+            "затем краткое пояснение по карте."
+        )
+
+    card_labels = [c["label"] for c in cards]
+    structured = await fetch_structured_reading(prompt, card_labels, card_roles)
+
+    if decrement_balance and _should_decrement_questions(chat_id):
+        user_data.decrement_user_questions(chat_id)
+
+    per_card_paragraphs = structured.get("card_interpretations") or []
+    while len(per_card_paragraphs) < expected_n:
+        per_card_paragraphs.append("")
+    for idx in range(expected_n):
+        raw = per_card_paragraphs[idx] if idx < len(per_card_paragraphs) else ""
+        if not (isinstance(raw, str) and raw.strip()):
+            per_card_paragraphs[idx] = (
+                f"По вашему вопросу карта раскрывает тему: {cards[idx]['label']}."
+            )
+
+    summary_paragraph = (structured.get("summary") or "").strip()
+    fallback_roles = role_labels_for_fallback or card_roles or []
+    if expected_n > 1 and not summary_paragraph:
+        summary_paragraph = "Итог по раскладу:\n\n" + "\n\n".join(
+            [
+                (
+                    f"{fallback_roles[i]}: {per_card_paragraphs[i]}"
+                    if i < len(fallback_roles) and fallback_roles[i]
+                    else f"{i + 1}. {cards[i]['label']}: {per_card_paragraphs[i]}"
+                )
+                for i in range(expected_n)
+            ]
+        )
+    if yes_no_mode and not summary_paragraph and per_card_paragraphs[0].strip():
+        summary_paragraph = per_card_paragraphs[0].strip()
+
+    if show_card_list_header and not compact_single_card:
+        names_text_lines = [f"{idx + 1}. {c['label']}" for idx, c in enumerate(cards)]
+        header = "Перечисление выпавших карт:\n" + "\n".join(names_text_lines)
+        await bot.send_message(chat_id, header, parse_mode="Markdown")
+
+    for idx, card in enumerate(cards):
+        interp = per_card_paragraphs[idx]
+        caption = f"Карта {idx + 1}: {card['label']}\n\n{interp}".strip()
+        card_path = card.get("path")
+        if card_path:
+            await photo_sender.send_photo(
+                chat_id, card_path, caption=caption, parse_mode="Markdown"
+            )
+        else:
+            await bot.send_message(chat_id, caption, parse_mode="Markdown")
+        if not compact_single_card:
+            await asyncio.sleep(3)
+
+    if yes_no_mode and summary_paragraph:
+        await bot.send_message(
+            chat_id, f"Ответ по раскладу:\n\n{summary_paragraph}", parse_mode="Markdown"
+        )
+    elif expected_n > 1 and summary_paragraph:
+        await bot.send_message(
+            chat_id,
+            f"Итоговый ответ по раскладу:\n\n{summary_paragraph}",
+            parse_mode="Markdown",
+        )
+    elif compact_single_card and summary_paragraph and not yes_no_mode:
+        await bot.send_message(chat_id, summary_paragraph, parse_mode="Markdown")
+
+    await bot.send_message(
+        chat_id,
+        "Расклад завершён. Выберите дальнейшее действие:",
+        reply_markup=main_kb(chat_id),
+    )
 
 PAYMENT_FILE = "payment_data.json"
 
@@ -1172,190 +1345,35 @@ async def parse_data(message: types.Message, state: FSMContext):
 async def process_question(message: types.Message, state: FSMContext):
     if message.text:
         logger.log_command(message.chat.id, message.text)
-    if message.text and re.match(r'^\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^,]+)\s*$', message.text):
-        chat_id = message.chat.id
 
-        cardas = message.text
+    chat_id = message.chat.id
+    manual_cards = parse_comma_separated_cards(message.text) if message.text else []
 
+    if 3 <= len(manual_cards) <= 6:
         msg = await bot.send_message(chat_id, "Происходит магия...")
-
         data_state = await state.get_data()
-
-        user_question = data_state[
-                            "question"] + 'Ответь на этот вопрос полагаясь на эти карты: ' + cardas + '. Напиши расклад по картам и общий расклад. Напиши текст без оформления текста и без введения. Опиши каждую карту и в конце общий расклад, всё по абзацам.'
-        tarot_response = await get_tarot_reading(user_question)
-        user_data.decrement_user_questions(message.chat.id)
-
-        paragraphs = split_text_into_paragraphs(tarot_response)
+        question_text = data_state.get("question", "")
         await bot.delete_message(chat_id, msg.message_id)
-        for i, paragraph in enumerate(paragraphs):
-            i += 1
-            if i != 4:
-                await bot.send_message(message.chat.id, f"{paragraph}", parse_mode="Markdown")
-                await asyncio.sleep(3)
-            else:
-                await bot.send_message(message.chat.id, f"{paragraph}", parse_mode="Markdown", reply_markup=main_kb(message.chat.id))
-
-        await state.clear()
-    elif message.text and re.match(r'^\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^,]+)\s*$', message.text):
-        chat_id = message.chat.id
-
-        cardas = message.text
-
-        msg = await bot.send_message(chat_id, "Происходит магия...")
-
-        data_state = await state.get_data()
-        user_question = data_state[
-                            "question"] + 'Ответь на этот вопрос полагаясь на эти карты: ' + cardas + '. Напиши расклад по картам и общий расклад. Напиши текст без оформления текста и без введения. Опиши каждую карту и в конце общий расклад, всё по абзацам.'
-        tarot_response = await get_tarot_reading(user_question)
-        user_data.decrement_user_questions(message.chat.id)
-
-        paragraphs = split_text_into_paragraphs(tarot_response)
-        await bot.delete_message(chat_id, msg.message_id)
-        for i, paragraph in enumerate(paragraphs):
-            i += 1
-            if i != 5:
-                await bot.send_message(message.chat.id, f"{paragraph}", parse_mode="Markdown")
-                await asyncio.sleep(3)
-            else:
-                await bot.send_message(message.chat.id, f"{paragraph}", parse_mode="Markdown", reply_markup=main_kb(message.chat.id))
-
-        await state.clear()
-    elif message.text and re.match(r'^\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^,]+)\s*$', message.text):
-        chat_id = message.chat.id
-
-        cardas = message.text
-
-        msg = await bot.send_message(chat_id, "Происходит магия...")
-
-        data_state = await state.get_data()
-        user_question = data_state[
-                            "question"] + 'Ответь на этот вопрос полагаясь на эти карты: ' + cardas + '. Напиши расклад по картам и общий расклад. Напиши текст без оформления текста и без введения. Опиши каждую карту и в конце общий расклад, всё по абзацам.'
-        tarot_response = await get_tarot_reading(user_question)
-        user_data.decrement_user_questions(message.chat.id)
-
-        paragraphs = split_text_into_paragraphs(tarot_response)
-        await bot.delete_message(chat_id, msg.message_id)
-        for i, paragraph in enumerate(paragraphs):
-            i += 1
-            if i != 6:
-                await bot.send_message(message.chat.id, f"{paragraph}", parse_mode="Markdown")
-                await asyncio.sleep(3)
-            else:
-                await bot.send_message(message.chat.id, f"{paragraph}", parse_mode="Markdown", reply_markup=main_kb(message.chat.id))
-
-        await state.clear()
-    elif message.text and re.match(r'^\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^,]+)\s*$', message.text):
-        chat_id = message.chat.id
-
-        cardas = message.text
-
-        msg = await bot.send_message(chat_id, "Происходит магия...")
-
-        data_state = await state.get_data()
-        user_question = data_state[
-                            "question"] + 'Ответь на этот вопрос полагаясь на эти карты: ' + cardas + '. Напиши расклад по картам и общий расклад. Напиши текст без оформления текста и без введения. Опиши каждую карту и в конце общий расклад, всё по абзацам.'
-        tarot_response = await get_tarot_reading(user_question)
-        user_data.decrement_user_questions(message.chat.id)
-
-        paragraphs = split_text_into_paragraphs(tarot_response)
-        await bot.delete_message(chat_id, msg.message_id)
-        for i, paragraph in enumerate(paragraphs):
-            i += 1
-            if i != 7:
-                await bot.send_message(message.chat.id, f"{paragraph}", parse_mode="Markdown")
-                await asyncio.sleep(3)
-            else:
-                await bot.send_message(message.chat.id, f"{paragraph}", parse_mode="Markdown", reply_markup=main_kb(message.chat.id))
-
+        await deliver_structured_spread(
+            chat_id,
+            question_text,
+            manual_cards,
+        )
         await state.clear()
     elif F.content_type == ContentType.WEB_APP_DATA:
-        chat_id = message.chat.id
         data = json.loads(message.web_app_data.data)
         cards12 = data["cards"]
-        cardas = await get_card_names(cards12)
-
         msg = await bot.send_message(chat_id, "Происходит магия...")
-
         data_state = await state.get_data()
         question_text = data_state["question"]
-
-        # Структурированный запрос к модели: интерпретации по порядку + summary
-        card_meanings_in_order = [tarot_cards[card_path] for card_path in cards12]
-        structured = None
-        last_err = None
-        expected_n = len(cards12)
-        for attempt in range(3):
-            try:
-                structured_try = await get_tarot_reading_structured(question_text, card_meanings_in_order)
-                if structured_is_complete(structured_try, expected_n):
-                    structured = structured_try
-                    break
-            except Exception as e:
-                last_err = e
-            await asyncio.sleep(1 + attempt)
-
-        subscription_end = user_data.get_subscription_end(chat_id)
-        should_decrement = not (subscription_end and datetime.now() < subscription_end)
-
         await bot.delete_message(chat_id, msg.message_id)
-
-        if not structured:
-            structured = {"card_interpretations": [], "summary": ""}
-
-        if should_decrement:
-            user_data.decrement_user_questions(message.chat.id)
-
-        per_card_paragraphs = structured.get("card_interpretations") or []
-        while len(per_card_paragraphs) < expected_n:
-            per_card_paragraphs.append("")
-        # Гарантируем непустой текст трактовки под каждую карту
-        for idx in range(expected_n):
-            raw = per_card_paragraphs[idx] if idx < len(per_card_paragraphs) else ""
-            if not (isinstance(raw, str) and raw.strip()):
-                per_card_paragraphs[idx] = f"По вашему вопросу карта раскрывает тему: {tarot_cards[cards12[idx]]}."
-
-        summary_paragraph = (structured.get("summary") or "").strip()
-        if expected_n > 1 and not summary_paragraph:
-            # Если summary не пришёл — сформируем итог из трактовок карт
-            summary_paragraph = "Суммарно по вашему вопросу карты показывают следующую тенденцию:\n\n" + "\n\n".join(
-                [
-                    f"{idx + 1}. {tarot_cards[cards12[idx]]}: {per_card_paragraphs[idx]}"
-                    for idx in range(expected_n)
-                ]
-            )
-
-        # 1. Перечисление выпавших карт
-        names_list = [tarot_cards[card_path] for card_path in cards12]
-        names_text_lines = [f"{idx + 1}. {name}" for idx, name in enumerate(names_list)]
-        header = "Перечисление выпавших карт:\n" + "\n".join(names_text_lines)
-        await bot.send_message(chat_id, header, parse_mode="Markdown")
-
-        # 2. Для каждой карты отправляем фото и её интерпретацию
-        for idx, card_path in enumerate(cards12):
-            card_name = tarot_cards[card_path]
-            interp = per_card_paragraphs[idx]
-            caption = f"Карта {idx + 1}: {card_name}\n\n{interp}".strip()
-            await photo_sender.send_photo(
-                message.chat.id,
-                card_path,
-                caption=caption,
-                parse_mode="Markdown",
-            )
-            await asyncio.sleep(3)
-
-        # 3. Общий итоговый ответ (обязателен, но если модель сломалась — всё равно покажем что есть)
-        if expected_n > 1 and summary_paragraph:
-            await bot.send_message(
-                chat_id,
-                f"Итоговый ответ по раскладу:\n\n{summary_paragraph}",
-                parse_mode="Markdown",
-            )
-
-        # 4. Возврат в главное меню
-        await bot.send_message(chat_id, "Расклад завершён. Выберите дальнейшее действие:", reply_markup=main_kb(message.chat.id))
+        await deliver_structured_spread(
+            chat_id,
+            question_text,
+            cards_from_webapp_paths(cards12),
+        )
         await state.clear()
-    else: 
+    else:
         await bot.send_message(message.chat.id, "Неправильный ввод. Повторите попытку")
 
 #------------------------------------------------------------------------------------------------------------------------
@@ -1406,60 +1424,40 @@ async def parse_data(message: types.Message, state: FSMContext):
 async def process_question(message: types.Message, state: FSMContext):
     if message.text:
         logger.log_command(message.chat.id, message.text)
+
+    chat_id = message.chat.id
+    data_state = await state.get_data()
+    question_text = data_state.get("question", "")
+
     if message.text:
-        chat_id = message.chat.id
-
-        cardas = message.text
-
+        manual_cards = parse_comma_separated_cards(message.text)
+        if len(manual_cards) != 1:
+            await bot.send_message(chat_id, "Введите одну карту (или выберите через WebApp).")
+            return
         msg = await bot.send_message(chat_id, "Происходит магия...")
-
-        data_state = await state.get_data()
-
-        user_question = data_state[
-                            "question"] + 'Ответь на этот вопрос да или нет, полагаясь на эту карту: ' + cardas + '. Напиши ответ да или нет по карте. Напиши текст без оформления текста и без введения.'
-        tarot_response = await get_tarot_reading(user_question)
-        user_data.decrement_user_questions(message.chat.id)
-
-        paragraphs = split_text_into_paragraphs(tarot_response)
         await bot.delete_message(chat_id, msg.message_id)
-        for i, paragraph in enumerate(paragraphs):
-            i += 1
-            if i != 4:
-                await bot.send_message(message.chat.id, f"{paragraph}", parse_mode="Markdown", reply_markup=main_kb(message.chat.id))
-                await asyncio.sleep(3)
-            else:
-                await bot.send_message(message.chat.id, f"{paragraph}", parse_mode="Markdown", reply_markup=main_kb(message.chat.id))
-
+        await deliver_structured_spread(
+            chat_id,
+            question_text,
+            manual_cards,
+            yes_no_mode=True,
+            show_card_list_header=False,
+            compact_single_card=True,
+        )
         await state.clear()
     elif F.content_type == ContentType.WEB_APP_DATA:
-        chat_id = message.chat.id
         data = json.loads(message.web_app_data.data)
         cards12 = data["cards"]
-        cardas = await get_card_names(cards12)
-
         msg = await bot.send_message(chat_id, "Происходит магия...")
-
-        data_state = await state.get_data()
-        user_question = data_state[
-                            "question"] + 'Ответь на этот вопрос да или нет, полагаясь на эту карту: ' + cardas + '. Напиши ответ да или нет по карте. Напиши текст без оформления текста и без введения.'
-        tarot_response = await get_tarot_reading(user_question)
-
-        subscription_end = user_data.get_subscription_end(chat_id)
-
-        if not (subscription_end and datetime.now() < subscription_end):
-            user_data.decrement_user_questions(message.chat.id)
-
-        paragraphs = split_text_into_paragraphs(tarot_response)
         await bot.delete_message(chat_id, msg.message_id)
-        for i, paragraph in enumerate(paragraphs):
-            i += 1
-            if i == 4:
-                await bot.send_message(chat_id, paragraph, reply_markup=main_kb(message.chat.id))
-            else:
-                await photo_sender.send_photo(message.chat.id, cards12[i-1], caption=paragraph,
-                                              parse_mode="Markdown", reply_markup=main_kb(message.chat.id))
-                await asyncio.sleep(3)
-
+        await deliver_structured_spread(
+            chat_id,
+            question_text,
+            cards_from_webapp_paths(cards12[:1]),
+            yes_no_mode=True,
+            show_card_list_header=False,
+            compact_single_card=True,
+        )
         await state.clear()
     else:
         await bot.send_message(message.chat.id, "Неправильный ввод. Повторите попытку")
@@ -1501,10 +1499,15 @@ async def one_day_finish(call: CallbackQuery):
     selected_card = one_card.select_random_card(chat_id)
     sel_card = f"static/card{selected_card}.jpg"
     carda = tarot_cards[sel_card]
-    user_question = 'Расскажи мне как пройдёт сегодняшний день по этой карте: ' + carda + '. Напиши текст без оформления текста и без введения. Только 1 абзац.'
-    tarot_response = await get_tarot_reading(user_question)
     await bot.delete_message(chat_id, msg.message_id)
-    await photo_sender.send_photo(chat_id, sel_card, caption=tarot_response, parse_mode="Markdown")
+    await deliver_structured_spread(
+        chat_id,
+        "Расклад «Карта дня». Опиши, как пройдёт сегодняшний день по выпавшей карте.",
+        [{"path": sel_card, "label": carda}],
+        decrement_balance=False,
+        show_card_list_header=False,
+        compact_single_card=True,
+    )
 
 #-----------------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -1567,114 +1570,34 @@ async def ask_roman_quest(message: types.Message, state: FSMContext):
 async def process_question(message: types.Message, state: FSMContext):
     if message.text:
         logger.log_command(message.chat.id, message.text)
-    if message.text and re.match(r'^\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^,]+)\s*$', message.text):
-        chat_id = message.chat.id
 
-        cardas = message.text
+    chat_id = message.chat.id
+    manual_cards = parse_comma_separated_cards(message.text) if message.text else []
+    roles = ROMANTIC_CARD_ROLES[: len(manual_cards)]
 
+    if len(manual_cards) == 3:
         msg = await bot.send_message(chat_id, "Происходит магия...")
-
-        data_state = await state.get_data()
-        user_question_input = (data_state.get("question") or "").strip()
-        user_question = 'Ответь на эти вопросы 1-я карта отвечает на вопрос: Что чувствует партнер? 2-я карта показывает: О чем думает партнер? 3-я карта раскрывает: Какие действия предпримет партнер? полагаясь на: ' + cardas + '. Напиши расклад и общий расклад. Напиши текст без оформления текста и без введения. Опиши каждую карту и в конце общий расклад, всё по абзацам.'
-        if user_question_input:
-            user_question = (
-                f"Вопрос пользователя: {user_question_input}\n\n"
-                "Ответь на эти вопросы по партнёру: "
-                "1-я карта отвечает на вопрос: Что чувствует партнер? "
-                "2-я карта показывает: О чем думает партнер? "
-                "3-я карта раскрывает: Какие действия предпримет партнер? "
-                f"Полагаясь на: {cardas}. "
-                "Напиши расклад и общий расклад. Напиши текст без оформления текста и без введения. "
-                "Опиши каждую карту и в конце общий расклад, всё по абзацам."
-            )
-        tarot_response = await get_tarot_reading(user_question)
-        user_data.decrement_user_questions(message.chat.id)
-
-        paragraphs = split_text_into_paragraphs(tarot_response)
         await bot.delete_message(chat_id, msg.message_id)
-        for i, paragraph in enumerate(paragraphs):
-            i += 1
-            if i != 4:
-                await bot.send_message(message.chat.id, f"{paragraph}", parse_mode="Markdown")
-                await asyncio.sleep(3)
-            else:
-                await bot.send_message(message.chat.id, f"{paragraph}", parse_mode="Markdown", reply_markup=main_kb(message.chat.id))
-
+        await deliver_structured_spread(
+            chat_id,
+            ROMANTIC_SPREAD_QUESTION,
+            manual_cards,
+            card_roles=roles,
+            role_labels_for_fallback=ROMANTIC_CARD_ROLES,
+        )
         await state.clear()
     elif F.content_type == ContentType.WEB_APP_DATA:
-        chat_id = message.chat.id
         data = json.loads(message.web_app_data.data)
         cards12 = data["cards"]
-        cardas = await get_card_names(cards12)
-
         msg = await bot.send_message(chat_id, "Происходит магия...")
-
-        # Структурированный расклад, чтобы порядок текста не сбивался
-        question_text = (
-            "Расклад «Чувства / Мысли / Действия».\n"
-            "1-я карта: что чувствует партнер.\n"
-            "2-я карта: о чём думает партнер.\n"
-            "3-я карта: какие действия предпримет партнер."
-        )
-        card_meanings_in_order = [tarot_cards[card_path] for card_path in cards12]
-        expected_n = len(cards12)
-        structured = None
-        for attempt in range(3):
-            try:
-                structured_try = await get_tarot_reading_structured(
-                    question_text,
-                    card_meanings_in_order,
-                    card_roles_in_order=["Чувства", "Мысли", "Действия"],
-                )
-                if structured_is_complete(structured_try, expected_n):
-                    structured = structured_try
-                    break
-            except Exception:
-                pass
-            await asyncio.sleep(1 + attempt)
-        if not structured:
-            structured = {"card_interpretations": [], "summary": ""}
-
-        subscription_end = user_data.get_subscription_end(chat_id)
-        if not (subscription_end and datetime.now() < subscription_end):
-            user_data.decrement_user_questions(message.chat.id)
-
         await bot.delete_message(chat_id, msg.message_id)
-        per_card_paragraphs = structured.get("card_interpretations") or []
-        summary_paragraph = (structured.get("summary") or "").strip()
-        while len(per_card_paragraphs) < len(cards12):
-            per_card_paragraphs.append("")
-        for idx in range(expected_n):
-            raw = per_card_paragraphs[idx]
-            if not (isinstance(raw, str) and raw.strip()):
-                per_card_paragraphs[idx] = f"По вашему вопросу карта раскрывает тему: {tarot_cards[cards12[idx]]}."
-        if not summary_paragraph:
-            summary_paragraph = "Итог по раскладу в рамках вопроса:\n\n" + "\n\n".join(
-                [
-                    f"{roles}: {per_card_paragraphs[i]}"
-                    for i, roles in enumerate(["Чувства", "Мысли", "Действия"][:expected_n])
-                ]
-            )
-
-        # 1. Перечисление карт (фиксируем названия из словаря, не из ИИ)
-        names_list = [tarot_cards[card_path] for card_path in cards12]
-        names_text_lines = [f"{idx + 1}. {name}" for idx, name in enumerate(names_list)]
-        header = "Перечисление выпавших карт:\n" + "\n".join(names_text_lines)
-        await bot.send_message(chat_id, header, parse_mode="Markdown")
-
-        # 2. Карта + текст строго по порядку
-        for idx, card_path in enumerate(cards12):
-            card_name = tarot_cards[card_path]
-            interp = per_card_paragraphs[idx]
-            caption = f"Карта {idx + 1}: {card_name}\n\n{interp}".strip()
-            await photo_sender.send_photo(chat_id, card_path, caption=caption, parse_mode="Markdown")
-            await asyncio.sleep(3)
-
-        # 3. Итог
-        await bot.send_message(chat_id, f"Итоговый ответ по раскладу:\n\n{summary_paragraph}", parse_mode="Markdown")
-
-        await bot.send_message(chat_id, "Расклад завершён. Выберите дальнейшее действие:", reply_markup=main_kb(message.chat.id))
+        await deliver_structured_spread(
+            chat_id,
+            ROMANTIC_SPREAD_QUESTION,
+            cards_from_webapp_paths(cards12),
+            card_roles=ROMANTIC_CARD_ROLES[: len(cards12)],
+            role_labels_for_fallback=ROMANTIC_CARD_ROLES,
+        )
         await state.clear()
     else:
         await bot.send_message(message.chat.id, "Неправильный ввод. Повторите попытку")
@@ -1740,115 +1663,33 @@ async def ask_roman_quest1(message: types.Message, state: FSMContext):
 async def process_question(message: types.Message, state: FSMContext):
     if message.text:
         logger.log_command(message.chat.id, message.text)
-    if message.text and re.match(r'^\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^,]+)\s*$', message.text):
-        chat_id = message.chat.id
 
-        cardas = message.text
+    chat_id = message.chat.id
+    manual_cards = parse_comma_separated_cards(message.text) if message.text else []
 
+    if len(manual_cards) == 3:
         msg = await bot.send_message(chat_id, "Происходит магия...")
-
-        data_state = await state.get_data()
-        user_question_input = (data_state.get("question") or "").strip()
-        user_question = 'Ответь на эти вопросы 1-я карта отвечает на вопрос: Описание ситуации? 2-я карта показывает: Возможные негативные последствия ? 3-я карта раскрывает: Совет для нейтрализации негативных последствий? полагаясь на: ' + cardas + '. Напиши расклад и общий расклад. Напиши текст без оформления текста и без введения. Опиши каждую карту и в конце общий расклад, всё по абзацам.'
-        if user_question_input:
-            user_question = (
-                f"Вопрос пользователя: {user_question_input}\n\n"
-                "Ответь на эти вопросы по ситуации: "
-                "1-я карта отвечает на вопрос: Описание ситуации. "
-                "2-я карта показывает: Возможные негативные последствия. "
-                "3-я карта раскрывает: Совет для нейтрализации негативных последствий. "
-                f"Полагаясь на: {cardas}. "
-                "Напиши расклад и общий расклад. "
-                "Напиши текст без оформления текста и без введения. "
-                "Опиши каждую карту и в конце общий расклад, всё по абзацам."
-            )
-        tarot_response = await get_tarot_reading(user_question)
-        user_data.decrement_user_questions(message.chat.id)
-
-        paragraphs = split_text_into_paragraphs(tarot_response)
         await bot.delete_message(chat_id, msg.message_id)
-        for i, paragraph in enumerate(paragraphs):
-            i += 1
-            if i != 4:
-                await bot.send_message(message.chat.id, f"{paragraph}", parse_mode="Markdown")
-                await asyncio.sleep(3)
-            else:
-                await bot.send_message(message.chat.id, f"{paragraph}", parse_mode="Markdown", reply_markup=main_kb(message.chat.id))
-
+        await deliver_structured_spread(
+            chat_id,
+            DANGEROUS_SPREAD_QUESTION,
+            manual_cards,
+            card_roles=DANGEROUS_CARD_ROLES,
+            role_labels_for_fallback=DANGEROUS_CARD_ROLES,
+        )
         await state.clear()
     elif F.content_type == ContentType.WEB_APP_DATA:
-        chat_id = message.chat.id
         data = json.loads(message.web_app_data.data)
         cards12 = data["cards"]
-        cardas = await get_card_names(cards12)
-
         msg = await bot.send_message(chat_id, "Происходит магия...")
-
-        # Структурированный расклад, чтобы порядок текста не сбивался
-        question_text = (
-            "Расклад «Предупреждение от карт».\n"
-            "1-я карта: описание ситуации.\n"
-            "2-я карта: возможные негативные последствия.\n"
-            "3-я карта: совет для нейтрализации негативных последствий."
-        )
-        card_meanings_in_order = [tarot_cards[card_path] for card_path in cards12]
-        expected_n = len(cards12)
-        structured = None
-        for attempt in range(3):
-            try:
-                structured_try = await get_tarot_reading_structured(
-                    question_text,
-                    card_meanings_in_order,
-                    card_roles_in_order=["Описание ситуации", "Негативные последствия", "Совет"],
-                )
-                if structured_is_complete(structured_try, expected_n):
-                    structured = structured_try
-                    break
-            except Exception:
-                pass
-            await asyncio.sleep(1 + attempt)
-        if not structured:
-            structured = {"card_interpretations": [], "summary": ""}
-
-        subscription_end = user_data.get_subscription_end(chat_id)
-        if not (subscription_end and datetime.now() < subscription_end):
-            user_data.decrement_user_questions(message.chat.id)
-
         await bot.delete_message(chat_id, msg.message_id)
-        per_card_paragraphs = structured.get("card_interpretations") or []
-        summary_paragraph = (structured.get("summary") or "").strip()
-        while len(per_card_paragraphs) < len(cards12):
-            per_card_paragraphs.append("")
-        for idx in range(expected_n):
-            raw = per_card_paragraphs[idx]
-            if not (isinstance(raw, str) and raw.strip()):
-                per_card_paragraphs[idx] = f"По вашему вопросу карта раскрывает тему: {tarot_cards[cards12[idx]]}."
-        if not summary_paragraph:
-            summary_paragraph = "Итог по раскладу в рамках вопроса:\n\n" + "\n\n".join(
-                [
-                    f"{roles}: {per_card_paragraphs[i]}"
-                    for i, roles in enumerate(["Описание ситуации", "Негативные последствия", "Совет"][:expected_n])
-                ]
-            )
-
-        # 1. Перечисление карт (фиксируем названия из словаря, не из ИИ)
-        names_list = [tarot_cards[card_path] for card_path in cards12]
-        names_text_lines = [f"{idx + 1}. {name}" for idx, name in enumerate(names_list)]
-        header = "Перечисление выпавших карт:\n" + "\n".join(names_text_lines)
-        await bot.send_message(chat_id, header, parse_mode="Markdown")
-
-        # 2. Карта + текст строго по порядку
-        for idx, card_path in enumerate(cards12):
-            card_name = tarot_cards[card_path]
-            interp = per_card_paragraphs[idx]
-            caption = f"Карта {idx + 1}: {card_name}\n\n{interp}".strip()
-            await photo_sender.send_photo(chat_id, card_path, caption=caption, parse_mode="Markdown")
-            await asyncio.sleep(3)
-
-        # 3. Итог
-        await bot.send_message(chat_id, f"Итоговый ответ по раскладу:\n\n{summary_paragraph}", parse_mode="Markdown")
-
-        await bot.send_message(chat_id, "Расклад завершён. Выберите дальнейшее действие:", reply_markup=main_kb(message.chat.id))
+        await deliver_structured_spread(
+            chat_id,
+            DANGEROUS_SPREAD_QUESTION,
+            cards_from_webapp_paths(cards12),
+            card_roles=DANGEROUS_CARD_ROLES[: len(cards12)],
+            role_labels_for_fallback=DANGEROUS_CARD_ROLES,
+        )
         await state.clear()
     else:
         await bot.send_message(message.chat.id, "Неправильный ввод. Повторите попытку")
