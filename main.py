@@ -1401,8 +1401,10 @@ async def periodic_30day_refill():
                     try:
                         await bot.send_message(
                             chat_id,
-                            "Чтобы получать ежемесячное пополнение (+5 вопросов каждые 30 дней), подпишитесь на канал:\n"
-                            CHANNEL_URL,
+                            (
+                                "Чтобы получать ежемесячное пополнение (+5 вопросов каждые 30 дней), "
+                                f"подпишитесь на канал:\n{CHANNEL_URL}"
+                            ),
                         )
                     except Exception:
                         pass
