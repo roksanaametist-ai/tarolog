@@ -1,3 +1,4 @@
+import html
 import logging
 import os
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -6,6 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from aiogram.filters import CommandStart, Command
+from aiogram.filters.command import CommandObject
 from aiogram.handlers import CallbackQueryHandler
 import asyncio
 import json
@@ -942,11 +944,16 @@ def build_admin_dashboard_html() -> str:
         f"<b>📅 Сегодня (клики в боте)</b>\n"
         f"  • «Оформить подписку»: <b>{today_sub}</b>\n"
         f"  • «Пригласить друга»: <b>{today_ref}</b>\n\n"
-        f"<i>Команды: /who ID · /stats_date123 · /denginam · /{ADMIN_CMD_TOTAL_USERS}</i>"
+        f"<i>Команды: /who123 ID · /stats_date123 · /denginam · /{ADMIN_CMD_TOTAL_USERS}</i>"
     )
 
 
+def _esc(value: object) -> str:
+    return html.escape(str(value if value is not None else "—"), quote=False)
+
+
 def format_user_lookup(target_id: int) -> str:
+    user_data.data = user_data.load_data()
     key = str(target_id)
     u = user_data.data.get(key)
     lines = [f"<b>Пользователь</b> <code>{target_id}</code>\n"]
@@ -959,16 +966,16 @@ def format_user_lookup(target_id: int) -> str:
             username = f"@{username}"
         lines.extend(
             [
-                f"Username: <b>{username}</b>\n",
-                f"Имя: {u.get('first_name') or '—'}\n",
-                f"Фамилия: {u.get('last_name') or '—'}\n",
-                f"Телефон: {u.get('phone') or '—'}\n",
-                f"Email: {u.get('email') or '—'}\n",
+                f"Username: <b>{_esc(username)}</b>\n",
+                f"Имя: {_esc(u.get('first_name') or '—')}\n",
+                f"Фамилия: {_esc(u.get('last_name') or '—')}\n",
+                f"Телефон: {_esc(u.get('phone') or '—')}\n",
+                f"Email: {_esc(u.get('email') or '—')}\n",
                 f"Вопросов: <b>{u.get('questions', 0)}</b>\n",
-                f"Подписка до: {u.get('subscription_end') or 'нет'}\n",
-                f"Реферер id: {u.get('referred_by') or '—'}\n",
+                f"Подписка до: {_esc(u.get('subscription_end') or 'нет')}\n",
+                f"Реферер id: {_esc(u.get('referred_by') or '—')}\n",
                 f"Приглашено друзей: <b>{u.get('referrals_count', 0)}</b>\n",
-                f"Последнее пополнение: {u.get('last_refill_at') or '—'}\n",
+                f"Последнее пополнение: {_esc(u.get('last_refill_at') or '—')}\n",
             ]
         )
         if u.get("imported_from_usernames"):
@@ -980,11 +987,29 @@ def format_user_lookup(target_id: int) -> str:
     if logs:
         lines.append(f"\n<b>Лог бота</b> (всего записей: {len(logs)})\n")
         for entry in logs[-8:]:
-            lines.append(f"• {entry.get('command', '—')} — {entry.get('date', '—')}\n")
+            lines.append(
+                f"• {_esc(entry.get('command', '—'))} — {_esc(entry.get('date', '—'))}\n"
+            )
     else:
         lines.append("\nВ <code>logs.json</code> записей нет — возможно, не писал боту.\n")
 
     return "".join(lines)
+
+
+def parse_who_target_id(message: types.Message, command: Optional[CommandObject]) -> Optional[int]:
+    if command and command.args:
+        token = command.args.strip().split()[0]
+        if token.isdigit():
+            return int(token)
+    text = message.text or ""
+    bot_user = message.from_user
+    if bot_user and bot_user.username:
+        text = text.replace(f"@{bot_user.username}", "")
+    parts = text.split()
+    for part in parts[1:]:
+        if part.isdigit():
+            return int(part)
+    return None
 
 
 async def send_html_chunks(chat_id: int, html: str, chunk_size: int = 4000) -> None:
@@ -2184,23 +2209,24 @@ async def process_pre_checkout_query(query: PreCheckoutQuery):
     await query.answer(ok=True)
 
 
-@dp.message(Command("who"))
-async def admin_who(message: types.Message):
-    if not await ensure_bot_admin(message):
+@dp.message(Command("who", "who123"))
+async def admin_who(message: types.Message, command: CommandObject):
+    if not await ensure_bot_admin(message.chat.id):
         return
-    parts = (message.text or "").split()
-    if len(parts) < 2:
+    logger.log_command(message.chat.id, message.text or "/who123")
+    target_id = parse_who_target_id(message, command)
+    if target_id is None:
         await message.answer(
-            "Формат: <code>/who telegram_id</code>\nПример: <code>/who 365515529</code>",
+            "Формат: <code>/who123 telegram_id</code>\n"
+            "Пример: <code>/who123 365515529</code>\n"
+            "Также работает: <code>/who 365515529</code>",
             parse_mode=ParseMode.HTML,
         )
         return
     try:
-        target_id = int(parts[1])
-    except ValueError:
-        await message.answer("Укажите числовой Telegram id.")
-        return
-    await message.answer(format_user_lookup(target_id), parse_mode=ParseMode.HTML)
+        await message.answer(format_user_lookup(target_id), parse_mode=ParseMode.HTML)
+    except Exception as e:
+        await message.answer(f"Ошибка при поиске: {e}")
 
 
 @dp.message(Command("admin123"))
