@@ -34,6 +34,10 @@ client = OpenAI(
 CARDS_WEBAPP_URL = "https://followthefrensy.ru/cards"
 YESNO_WEBAPP_URL = "https://followthefrensy.ru/yesno"
 
+CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/follow_the_frensy").strip()
+GROUP_INVITE_URL = os.getenv("GROUP_INVITE_URL", "").strip()
+GROUP_BUTTON_TEXT = "👥 Наша группа"
+
 channel_id = -1001887928983
 
 logging.basicConfig(level=logging.INFO)
@@ -1175,7 +1179,7 @@ async def periodic_30day_refill():
                         await bot.send_message(
                             chat_id,
                             "Чтобы получать ежемесячное пополнение (+5 вопросов каждые 30 дней), подпишитесь на канал:\n"
-                            "https://t.me/follow_the_frensy",
+                            CHANNEL_URL,
                         )
                     except Exception:
                         pass
@@ -1708,7 +1712,7 @@ async def cards(message: types.Message):
     await message.answer("Подпишись для бесплатных ежедневных прогнозов на день: "
                          "\n"
                          "\n"
-                         "https://t.me/follow_the_frensy")
+                         CHANNEL_URL)
 
 
 @dp.message(lambda message: message.text == 'ℹ️ Как работает бот')
@@ -1726,6 +1730,20 @@ async def how_it_works(message: types.Message):
                          "\n"
                          "\n"
                          "https://www.youtube.com/shorts/FPpt3rNHXck?si=xGoInzxR6y_OQFky")
+
+
+@dp.message(lambda message: message.text == GROUP_BUTTON_TEXT)
+async def our_group(message: types.Message):
+    logger.log_command(message.chat.id, message.text)
+    if GROUP_INVITE_URL:
+        await message.answer(
+            "Вступайте в нашу группу — там анонсы, обсуждения и дополнительные материалы:\n"
+            f"{GROUP_INVITE_URL}"
+        )
+    else:
+        await message.answer(
+            "Ссылка на группу пока не настроена. Администратор может добавить GROUP_INVITE_URL в .env на сервере."
+        )
 
 
 @dp.message(lambda message: message.text == '👥 Пригласить друга (+5)')
@@ -2120,6 +2138,7 @@ async def get_stats(message: types.Message):
         '🔮✨Предупреждение от карт ✨🔮',
         '🎁 Получить дополнительные расклады!',
         '👥 Пригласить друга (+5)',
+        GROUP_BUTTON_TEXT,
         '💎 Мой баланс',
         '👤 Консультация',
         'ℹ️ Как работает бот',
@@ -2261,7 +2280,11 @@ def main_kb(chat_id):
     builder.row(button_solo_reading)
     builder.row(button_oplata)
     builder.row(button_support, button_how_it_works)
-    builder.row(button_referral)
+    if GROUP_INVITE_URL:
+        button_group = types.KeyboardButton(text=GROUP_BUTTON_TEXT)
+        builder.row(button_referral, button_group)
+    else:
+        builder.row(button_referral)
     #демид так и должно быть все ок builder.row(button_cards)
     builder.row(button_promo)
     builder.row(button_dop_question)
@@ -2359,7 +2382,7 @@ async def check_sub(message: types.Message):
                                                 "Следующее пополнение вашего аккаунта на 5 раскладов через 30 дней.")
         else:
             await bot.send_message(chat_id,
-                                   "Вы не подписаны на канал! Вот ссылка на канал: https://t.me/follow_the_frensy")
+                                   f"Вы не подписаны на канал! Вот ссылка на канал: {CHANNEL_URL}")
     except:
         await bot.send_message(chat_id, "Ошибка. Обратитесь в техподдержку")
 
