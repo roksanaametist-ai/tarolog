@@ -317,6 +317,11 @@ PLAN_LABELS = {
     "sub_30d_699": "Год безлимит — 2999 ₽",
 }
 
+REFERRAL_HINT = (
+    "\n\n👥 Реферальная система: «Пригласить друга (+5)» в меню — "
+    "за каждого нового пользователя по вашей ссылке вам +5 раскладов."
+)
+
 NURTURE_DELAYS_INTENT = (
     timedelta(minutes=30),
     timedelta(hours=24),
@@ -437,21 +442,38 @@ async def apply_subscription_payment(chat_id: int, selected_price: int) -> bool:
     return True
 
 
+async def send_referral_info(chat_id: int) -> None:
+    me = await bot.get_me()
+    link = f"https://t.me/{me.username}?start=ref_{chat_id}"
+    invited = user_data.get_referrals_count(chat_id)
+    await bot.send_message(
+        chat_id,
+        "Ваша реферальная ссылка:\n"
+        f"{link}\n\n"
+        "За каждого друга, который впервые запустит бота по этой ссылке, вам начисляется +5 раскладов.\n"
+        f"Приглашено друзей: {invited}",
+        reply_markup=main_kb(chat_id),
+    )
+
+
 async def send_nurture_intent(chat_id: int, step: int) -> None:
     texts = [
         (
             "Вы начали оформление подписки 🔮\n\n"
             "Остался один шаг — выберите тариф ниже. После оплаты безлимитные расклады "
             "откроются сразу."
+            + REFERRAL_HINT
         ),
         (
             "Напоминание: вы смотрели тарифы подписки ✨\n\n"
             "С подпиской не нужно считать оставшиеся вопросы — все расклады доступны без лимита."
+            + REFERRAL_HINT
         ),
         (
             "Последнее напоминание по подписке.\n\n"
             "Если остались вопросы по оплате — напишите в 🛠 Техподдержку. "
             "Или выберите тариф, когда будете готовы."
+            + REFERRAL_HINT
         ),
     ]
     if step >= len(texts):
@@ -466,15 +488,18 @@ async def send_nurture_checkout(chat_id: int, rec: dict, step: int) -> None:
         (
             f"Напоминание: ссылка на оплату «{plan}» всё ещё активна 💳\n\n"
             "Если страница закрылась — нажмите кнопку ниже и завершите оплату."
+            + REFERRAL_HINT
         ),
         (
             f"Безлимитная подписка «{plan}» открывает все расклады без ограничений: "
             "карта дня, отношения, да/нет, предупреждение ✨\n\n"
             "Завершите оплату, когда будет удобно."
+            + REFERRAL_HINT
         ),
         (
             f"Последнее напоминание по оплате «{plan}».\n\n"
             "Ссылка ниже — если передумали, просто проигнорируйте это сообщение."
+            + REFERRAL_HINT
         ),
     ]
     if step >= len(texts):
@@ -484,6 +509,9 @@ async def send_nurture_checkout(chat_id: int, rec: dict, step: int) -> None:
         markup.row(types.InlineKeyboardButton(text="💳 Перейти к оплате", url=url))
     markup.row(
         types.InlineKeyboardButton(text="📋 Выбрать другой тариф", callback_data="nurture_pick_plan")
+    )
+    markup.row(
+        types.InlineKeyboardButton(text="👥 Пригласить друга (+5)", callback_data="nurture_referral")
     )
     await bot.send_message(chat_id, texts[step], reply_markup=markup.as_markup())
 
@@ -500,7 +528,7 @@ async def try_complete_pending_payment(chat_id: int, rec: dict) -> bool:
             await apply_subscription_payment(chat_id, int(selected_price))
             await bot.send_message(
                 chat_id,
-                "Оплата прошла успешно! Вам выдана подписка 🎉",
+                "Оплата прошла успешно! Вам выдана подписка 🎉" + REFERRAL_HINT,
                 reply_markup=main_kb(chat_id),
             )
             return True
@@ -1862,16 +1890,7 @@ async def how_it_works(message: types.Message):
 @dp.message(lambda message: message.text == '👥 Пригласить друга (+5)')
 async def referral_link(message: types.Message):
     logger.log_command(message.chat.id, message.text)
-    me = await bot.get_me()
-    chat_id = message.chat.id
-    link = f"https://t.me/{me.username}?start=ref_{chat_id}"
-    invited = user_data.get_referrals_count(chat_id)
-    await message.answer(
-        "Ваша реферальная ссылка:\n"
-        f"{link}\n\n"
-        "За каждого друга, который впервые запустит бота по этой ссылке, вам начисляется +5 раскладов.\n"
-        f"Приглашено друзей: {invited}"
-    )
+    await send_referral_info(message.chat.id)
 
 
 @dp.message(lambda message: message.text == '🛠 Техподдержка')
@@ -1921,12 +1940,18 @@ async def oplata(message: Message, state: FSMContext):
         payment_nurture.set_intent(chat_id)
     email = user_data.get_user_email(chat_id)
     if email:
-        await message.answer("Выбери актуальную подписку для себя:", reply_markup=sub())
+        await message.answer(
+            "Выбери актуальную подписку для себя:" + REFERRAL_HINT,
+            reply_markup=sub(),
+        )
     else:
-        await message.answer("Для того чтобы оформить подписку необходимо ввести почту. "
-                             "\n"
-                             "\n"
-                             "Введите почту.")
+        await message.answer(
+            "Для того чтобы оформить подписку необходимо ввести почту. "
+            "\n"
+            "\n"
+            "Введите почту."
+            + REFERRAL_HINT
+        )
 
         await state.set_state(Email.email_check)
 
@@ -1939,7 +1964,10 @@ async def email_box(message: Message, state: FSMContext):
         user_data.set_user_email(chat_id, email_notvalid)
         if not user_has_active_subscription(chat_id):
             payment_nurture.set_intent(chat_id)
-        await message.answer("Email установлен. Выберите подписку.", reply_markup=sub())
+        await message.answer(
+            "Email установлен. Выберите подписку." + REFERRAL_HINT,
+            reply_markup=sub(),
+        )
         await state.clear()
     except ValueError:
         await state.clear()
@@ -2031,11 +2059,13 @@ async def submonth(call: CallbackQuery):
 
     pay_kb = InlineKeyboardBuilder()
     pay_kb.row(types.InlineKeyboardButton(text="💳 Оплатить сейчас", url=confirmation_url))
+    pay_kb.row(types.InlineKeyboardButton(text="👥 Пригласить друга (+5)", callback_data="nurture_referral"))
     await bot.send_message(
         chat_id=message.chat.id,
         text=(
             f"Оплата: {PLAN_LABELS.get(plan_key, 'Подписка')}\n\n"
             "Нажмите кнопку ниже — откроется безопасная страница YooKassa."
+            + REFERRAL_HINT
         ),
         reply_markup=pay_kb.as_markup(),
     )
@@ -2048,10 +2078,19 @@ async def nurture_pick_plan(call: CallbackQuery):
     await call.answer()
     chat_id = call.message.chat.id
     if user_has_active_subscription(chat_id):
-        await call.message.answer("У вас уже активна подписка ✨", reply_markup=main_kb(chat_id))
+        await call.message.answer(
+            "У вас уже активна подписка ✨" + REFERRAL_HINT,
+            reply_markup=main_kb(chat_id),
+        )
         payment_nurture.mark_completed(chat_id)
         return
-    await call.message.answer("Выберите тариф:", reply_markup=sub())
+    await call.message.answer("Выберите тариф:" + REFERRAL_HINT, reply_markup=sub())
+
+
+@dp.callback_query(F.data == "nurture_referral")
+async def nurture_referral(call: CallbackQuery):
+    await call.answer()
+    await send_referral_info(call.message.chat.id)
 
 
 async def check_payment_status(payment_id, chat_id, selected_price):
@@ -2061,18 +2100,23 @@ async def check_payment_status(payment_id, chat_id, selected_price):
 
         if zakaz.status == "succeeded":
             if await apply_subscription_payment(chat_id, selected_price):
-                await bot.send_message(chat_id, "Вам выдана подписка!", reply_markup=main_kb(chat_id))
+                await bot.send_message(
+                    chat_id,
+                    "Вам выдана подписка!" + REFERRAL_HINT,
+                    reply_markup=main_kb(chat_id),
+                )
             return
 
         elif zakaz.status == "canceled":
-            await bot.send_message(chat_id, "Оплата отменена.")
+            await bot.send_message(chat_id, "Оплата отменена." + REFERRAL_HINT)
             return
         await asyncio.sleep(10)
 
     await bot.send_message(
         chat_id,
         "Оплата пока не поступила. Если вы уже оплатили — подписка активируется автоматически в течение нескольких минут.\n"
-        "Или нажмите «💳 Оформить подписку» и откройте ссылку снова.",
+        "Или нажмите «💳 Оформить подписку» и откройте ссылку снова."
+        + REFERRAL_HINT,
     )
 
 
