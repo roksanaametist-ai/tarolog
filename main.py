@@ -41,6 +41,8 @@ GROUP_BUTTON_TEXT = "👥 Наша группа"
 channel_id = -1001887928983
 BOT_STATIC_ADMINS = {491482483, 365515529, 664376580}
 ADMIN_STATS_BUTTON = "📊 Статистика"
+# Секретная команда вместо устаревшей /total_users123 (задайте свою в .env)
+ADMIN_CMD_TOTAL_USERS = os.getenv("ADMIN_CMD_TOTAL_USERS", "u9k2m7p4q1").strip().lstrip("/")
 
 logging.basicConfig(level=logging.INFO)
 
@@ -871,6 +873,13 @@ def is_bot_admin(chat_id: int) -> bool:
     return (chat_id in BOT_STATIC_ADMINS) or admin_manager.is_admin(chat_id)
 
 
+async def ensure_bot_admin(message: types.Message) -> bool:
+    if is_bot_admin(message.chat.id):
+        return True
+    await message.answer("Нет доступа.")
+    return False
+
+
 def load_payment_stats() -> Optional[dict]:
     try:
         with open(PAYMENT_FILE, "r", encoding="utf-8") as f:
@@ -933,7 +942,7 @@ def build_admin_dashboard_html() -> str:
         f"<b>📅 Сегодня (клики в боте)</b>\n"
         f"  • «Оформить подписку»: <b>{today_sub}</b>\n"
         f"  • «Пригласить друга»: <b>{today_ref}</b>\n\n"
-        f"<i>Команды: /stats_date123 YYYY-MM-DD · /denginam · /total_users123</i>"
+        f"<i>Команды: /stats_date123 · /denginam · /{ADMIN_CMD_TOTAL_USERS}</i>"
     )
 
 
@@ -2176,6 +2185,8 @@ async def process_payment(message):
 
 @dp.message(Command("statistika123"))
 async def show_statistika(message: types.Message):
+    if not await ensure_bot_admin(message):
+        return
     filt_ids = user_data.get_filtered_user_ids([531235523])
     gwr = 0
     for pid_id in filt_ids:
@@ -2184,6 +2195,8 @@ async def show_statistika(message: types.Message):
 
 @dp.message(Command("stats_by_date123"))
 async def get_stats_by_date(message: types.Message):
+    if not await ensure_bot_admin(message):
+        return
     #Формат YYYY-MM-DD
     date = message.text.split()[-1]
     date_stats = logger.get_date_stats(date)
@@ -2199,6 +2212,8 @@ async def get_stats_by_date(message: types.Message):
 
 @dp.message(Command("stats_by_command123"))
 async def get_command_stats(message: types.Message):
+    if not await ensure_bot_admin(message):
+        return
     command = message.text.split()[-1]
     command_stats = logger.get_command_stats(command)
 
@@ -2213,6 +2228,8 @@ async def get_command_stats(message: types.Message):
 
 @dp.message(Command("stats123"))
 async def get_stats(message: types.Message):
+    if not await ensure_bot_admin(message):
+        return
     user_id = int(message.text.split()[-1])
     user_stats = logger.get_user_stats(user_id)
 
@@ -2227,28 +2244,26 @@ async def get_stats(message: types.Message):
 
 @dp.message(Command("new_users_today123"))
 async def get_new_users_today(message: types.Message):
-    """
-    Обработчик команды /new_users_today123.
-    Возвращает количество новых пользователей за сегодня.
-    """
+    if not await ensure_bot_admin(message):
+        return
     new_users_count = logger.get_new_users_today()
     await message.reply(f"Количество новых пользователей за сегодня: {new_users_count}")
 
-@dp.message(Command("total_users123"))
+@dp.message(Command(ADMIN_CMD_TOTAL_USERS))
 async def get_total_users(message: types.Message):
-    """
-    Обработчик команды /total_users123.
-    Возвращает общее количество уникальных пользователей бота.
-    """
+    if not await ensure_bot_admin(message):
+        return
     total_users_count = logger.get_total_users()
-    await message.reply(f"Общее количество пользователей бота: {total_users_count}")
+    in_db = user_data.get_aggregate_stats()["total"]
+    await message.reply(
+        f"Пользователей в логах (уник.): {total_users_count}\n"
+        f"Пользователей в user_data.json: {in_db}"
+    )
 
 @dp.message(Command("stats_last_x_days123"))
 async def get_stats_last_x_days(message: types.Message):
-    """
-    Обработчик команды /stats_last_x_days123.
-    Возвращает статистику за последние X дней.
-    """
+    if not await ensure_bot_admin(message):
+        return
     try:
         x = int(message.text.split()[-1])
         if x <= 0:
@@ -2270,6 +2285,8 @@ async def get_stats_last_x_days(message: types.Message):
 
 @dp.message(Command("stats_date123"))
 async def get_stats(message: types.Message):
+    if not await ensure_bot_admin(message):
+        return
     date_arg = message.text.split()[-1]
 
     if not date_arg:
@@ -2349,6 +2366,8 @@ async def get_stats(message: types.Message):
 
 @dp.message(Command("popolnit_na123"))
 async def get_pulled(message: types.Message):
+    if not await ensure_bot_admin(message):
+        return
     count1 = int(message.text.split()[-1])
     filtered_ids = user_data.get_filtered_user_ids([343465637])
     for pid_chat_id in filtered_ids:
