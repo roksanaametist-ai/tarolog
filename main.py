@@ -39,6 +39,8 @@ GROUP_INVITE_URL = os.getenv("GROUP_INVITE_URL", "").strip()
 GROUP_BUTTON_TEXT = "👥 Наша группа"
 
 channel_id = -1001887928983
+BOT_STATIC_ADMINS = {491482483, 365515529, 664376580}
+ADMIN_STATS_BUTTON = "📊 Статистика"
 
 logging.basicConfig(level=logging.INFO)
 
@@ -278,6 +280,43 @@ class UserData:
     def get_referrals_count(self, chat_id: int) -> int:
         return int(self.data.get(str(chat_id), {}).get('referrals_count', 0))
 
+    def get_aggregate_stats(self) -> dict:
+        now = datetime.now()
+        top_referrers: List[tuple] = []
+        stats = {
+            "total": 0,
+            "active_subs": 0,
+            "with_email": 0,
+            "referred_users": 0,
+            "total_invites": 0,
+            "referrers": 0,
+            "zero_questions": 0,
+            "top_referrers": top_referrers,
+        }
+        for uid, u in self.data.items():
+            stats["total"] += 1
+            if u.get("email"):
+                stats["with_email"] += 1
+            if u.get("referred_by") is not None:
+                stats["referred_users"] += 1
+            rc = int(u.get("referrals_count", 0))
+            stats["total_invites"] += rc
+            if rc > 0:
+                stats["referrers"] += 1
+                top_referrers.append((int(uid), rc))
+            end = u.get("subscription_end")
+            if end:
+                try:
+                    if datetime.strptime(end, "%Y-%m-%d %H:%M:%S") > now:
+                        stats["active_subs"] += 1
+                except ValueError:
+                    pass
+            if int(u.get("questions", 0)) <= 0:
+                stats["zero_questions"] += 1
+        top_referrers.sort(key=lambda x: x[1], reverse=True)
+        stats["top_referrers"] = top_referrers[:5]
+        return stats
+
 user_data = UserData()
 
 #-----------------------------------------------------------------------------------------------------------------------
@@ -424,6 +463,26 @@ class PaymentNurtureStore:
         if key in self.data:
             self.data[key]["step_sent"] = int(self.data[key].get("step_sent", 0)) + 1
             self._save()
+
+    def get_funnel_stats(self) -> dict:
+        stats = {
+            "total": len(self.data),
+            "intent_open": 0,
+            "checkout_open": 0,
+            "completed": 0,
+            "by_plan": {},
+        }
+        for rec in self.data.values():
+            if rec.get("completed"):
+                stats["completed"] += 1
+                continue
+            if rec.get("stage") == "checkout":
+                stats["checkout_open"] += 1
+                plan_key = rec.get("plan_key", "unknown")
+                stats["by_plan"][plan_key] = stats["by_plan"].get(plan_key, 0) + 1
+            else:
+                stats["intent_open"] += 1
+        return stats
 
 
 payment_nurture = PaymentNurtureStore()
@@ -806,6 +865,95 @@ class AdminManager:
 
 
 admin_manager = AdminManager()
+
+
+def is_bot_admin(chat_id: int) -> bool:
+    return (chat_id in BOT_STATIC_ADMINS) or admin_manager.is_admin(chat_id)
+
+
+def load_payment_stats() -> Optional[dict]:
+    try:
+        with open(PAYMENT_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+
+
+def count_today_commands(command: str) -> int:
+    today = datetime.now().strftime("%Y-%m-%d")
+    return sum(1 for log in logger.get_date_stats(today) if log.get("command") == command)
+
+
+def build_admin_dashboard_html() -> str:
+    u = user_data.get_aggregate_stats()
+    funnel = payment_nurture.get_funnel_stats()
+    pay = load_payment_stats() or {}
+    total_amount = int(pay.get("total_amount", 0))
+    subs = pay.get("subscriptions", {})
+
+    sub_lines = "\n".join(f"  • {k}: <b>{v}</b> шт." for k, v in subs.items()) or "  • нет данных"
+    plan_lines = "\n".join(
+        f"  • {PLAN_LABELS.get(k, k)}: <b>{v}</b>"
+        for k, v in funnel.get("by_plan", {}).items()
+    ) or "  • нет активных"
+
+    top_ref_lines = "\n".join(
+        f"  • id <code>{uid}</code>: <b>{cnt}</b> друзей" for uid, cnt in u["top_referrers"]
+    ) or "  • пока никого"
+
+    today_sub = count_today_commands("💳 Оформить подписку")
+    today_ref = count_today_commands("👥 Пригласить друга (+5)")
+    new_today = logger.get_new_users_today()
+    log_users = logger.get_total_users()
+
+    return (
+        f"<b>📊 Панель администратора</b>\n"
+        f"<i>{datetime.now().strftime('%d.%m.%Y %H:%M')}</i>\n\n"
+        f"<b>👥 Пользователи</b>\n"
+        f"  • В базе: <b>{u['total']}</b>\n"
+        f"  • В логах (уник.): <b>{log_users}</b>\n"
+        f"  • Новых сегодня: <b>{new_today}</b>\n"
+        f"  • Активная подписка: <b>{u['active_subs']}</b>\n"
+        f"  • Без вопросов: <b>{u['zero_questions']}</b>\n"
+        f"  • Указали email: <b>{u['with_email']}</b>\n\n"
+        f"<b>💳 Оплаты (всего)</b>\n"
+        f"  • Сумма: <b>{total_amount / 100:.2f} ₽</b>\n"
+        f"{sub_lines}\n\n"
+        f"<b>🔗 Реферальная система</b>\n"
+        f"  • Пришли по реф. ссылке: <b>{u['referred_users']}</b>\n"
+        f"  • Всего приглашений: <b>{u['total_invites']}</b>\n"
+        f"  • Рефереров (≥1 друг): <b>{u['referrers']}</b>\n"
+        f"<b>Топ рефереров:</b>\n{top_ref_lines}\n\n"
+        f"<b>🛒 Воронка подписки (дожим)</b>\n"
+        f"  • Записей в трекере: <b>{funnel['total']}</b>\n"
+        f"  • Открыли «Оформить подписку»: <b>{funnel['intent_open']}</b> в процессе\n"
+        f"  • Получили ссылку оплаты: <b>{funnel['checkout_open']}</b> в процессе\n"
+        f"  • Завершили (оплатили/закрыто): <b>{funnel['completed']}</b>\n"
+        f"<b>Активные тарифы в ожидании:</b>\n{plan_lines}\n\n"
+        f"<b>📅 Сегодня (клики в боте)</b>\n"
+        f"  • «Оформить подписку»: <b>{today_sub}</b>\n"
+        f"  • «Пригласить друга»: <b>{today_ref}</b>\n\n"
+        f"<i>Команды: /stats_date123 YYYY-MM-DD · /denginam · /total_users123</i>"
+    )
+
+
+async def send_html_chunks(chat_id: int, html: str, chunk_size: int = 4000) -> None:
+    if len(html) <= chunk_size:
+        await bot.send_message(chat_id, html, parse_mode=ParseMode.HTML)
+        return
+    lines = html.split("\n")
+    chunk = ""
+    for line in lines:
+        part = line + "\n"
+        if len(chunk) + len(part) > chunk_size:
+            if chunk.strip():
+                await bot.send_message(chat_id, chunk.strip(), parse_mode=ParseMode.HTML)
+            chunk = part
+        else:
+            chunk += part
+    if chunk.strip():
+        await bot.send_message(chat_id, chunk.strip(), parse_mode=ParseMode.HTML)
+
 
 #----------------------------------------------------------------------------------------------------------------------------------
 
@@ -1984,8 +2132,21 @@ async def process_pre_checkout_query(query: PreCheckoutQuery):
     await query.answer(ok=True)
 
 
+@dp.message(Command("admin123"))
+@dp.message(lambda message: message.text == ADMIN_STATS_BUTTON)
+async def admin_dashboard(message: types.Message):
+    if not is_bot_admin(message.chat.id):
+        await message.answer("Нет доступа.")
+        return
+    logger.log_command(message.chat.id, message.text or "/admin123")
+    await send_html_chunks(message.chat.id, build_admin_dashboard_html())
+
+
 @dp.message(Command("denginam"))
 async def show_payment_data(message: types.Message):
+    if not is_bot_admin(message.chat.id):
+        await message.answer("Нет доступа.")
+        return
     try:
         with open(PAYMENT_FILE, "r") as file:
             data = json.load(file)
@@ -2146,6 +2307,7 @@ async def get_stats(message: types.Message):
         '💳 Оформить подписку',
         '🎟 Промокод',
         '📣 Сообщение пользователям',
+        ADMIN_STATS_BUTTON,
         '◀️ Назад'
     ]
 
@@ -2288,10 +2450,9 @@ def main_kb(chat_id):
     #демид так и должно быть все ок builder.row(button_cards)
     builder.row(button_promo)
     builder.row(button_dop_question)
-    # Статичные админы + динамические из AdminManager
-    static_admins = {491482483, 365515529, 664376580}
-    if (chat_id in static_admins) or admin_manager.is_admin(chat_id):
-        builder.row(button_send_messages)
+    if is_bot_admin(chat_id):
+        button_admin_stats = types.KeyboardButton(text=ADMIN_STATS_BUTTON)
+        builder.row(button_send_messages, button_admin_stats)
     return builder.as_markup(resize_keyboard=True)
 
 def back_kb():
@@ -2316,8 +2477,7 @@ async def check_sub(message: types.Message, state: FSMContext):
 async def check_sub(message: types.Message, state: FSMContext):
     logger.log_command(message.chat.id, message.text)
     chat_id = message.chat.id
-    static_admins = {491482483, 365515529, 664376580}
-    if not ((chat_id in static_admins) or admin_manager.is_admin(chat_id)):
+    if not is_bot_admin(chat_id):
         return
     await state.clear()
     await state.set_state(Mess_check.message_id)
@@ -2336,8 +2496,7 @@ async def check_sub(message: types.Message, state: FSMContext):
 async def parse_message(message: types.Message, state: FSMContext):
     chat_id = message.chat.id
     logger.log_command(chat_id, message.text or "<non-text message>")
-    static_admins = {491482483, 365515529, 664376580}
-    if not ((chat_id in static_admins) or admin_manager.is_admin(chat_id)):
+    if not is_bot_admin(chat_id):
         await state.clear()
         return
     await state.clear()
