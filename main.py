@@ -39,7 +39,7 @@ GROUP_INVITE_URL = os.getenv("GROUP_INVITE_URL", "").strip()
 GROUP_BUTTON_TEXT = "👥 Наша группа"
 
 channel_id = -1001887928983
-BOT_STATIC_ADMINS = {491482483, 365515529, 664376580}
+BOT_STATIC_ADMINS = {491482483}
 ADMIN_STATS_BUTTON = "📊 Статистика"
 # Секретная команда вместо устаревшей /total_users123 (задайте свою в .env)
 ADMIN_CMD_TOTAL_USERS = os.getenv("ADMIN_CMD_TOTAL_USERS", "u9k2m7p4q1").strip().lstrip("/")
@@ -870,7 +870,7 @@ admin_manager = AdminManager()
 
 
 def is_bot_admin(chat_id: int) -> bool:
-    return (chat_id in BOT_STATIC_ADMINS) or admin_manager.is_admin(chat_id)
+    return chat_id in BOT_STATIC_ADMINS
 
 
 async def ensure_bot_admin(message: types.Message) -> bool:
@@ -1628,12 +1628,14 @@ async def process_question(message: types.Message, state: FSMContext):
 
 @dp.message(lambda message: message.text == '1111')
 async def make_admin(message: types.Message):
-    """Команда 1111: делает пользователя админом и выдает очень много вопросов."""
+    """Секретная команда: безлимит вопросов только для владельца бота."""
     chat_id = message.chat.id
-    admin_manager.add_admin(chat_id)
+    if chat_id not in BOT_STATIC_ADMINS:
+        await message.answer("Нет доступа.")
+        return
     user_data.set_user_questions(chat_id, 10**9)
     await message.answer(
-        "Вы назначены администратором. Вам выдано практически бесконечное количество вопросов.",
+        "Вам выдано практически бесконечное количество вопросов.",
         reply_markup=main_kb(chat_id),
     )
 
