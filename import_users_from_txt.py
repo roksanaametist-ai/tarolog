@@ -3,7 +3,8 @@ import asyncio
 import json
 import os
 import random
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 from typing import Dict, Optional, Tuple
 
 from aiogram import Bot
@@ -72,6 +73,37 @@ def load_user_data(path: str) -> Dict[str, dict]:
 def save_user_data(path: str, data: Dict[str, dict]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def parse_retry_after_seconds(exc: Exception) -> Optional[int]:
+    """Достаёт секунды ожидания из ошибки Telegram FloodWait."""
+    text = str(exc).lower()
+    m = re.search(r"retry after[:\s]+(\d+)", text)
+    if m:
+        return int(m.group(1))
+    for t in text.replace(",", " ").split():
+        if t.isdigit():
+            val = int(t)
+            if val > 0:
+                return val
+    return None
+
+
+def save_progress(
+    progress_path: str,
+    next_index: int,
+    total: int,
+    extra: Optional[dict] = None,
+) -> None:
+    payload = {
+        "next_index": next_index,
+        "total": total,
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    if extra:
+        payload.update(extra)
+    with open(progress_path, "w", encoding="utf-8") as pf:
+        json.dump(payload, pf, ensure_ascii=False, indent=2)
 
 
 def normalize_username(raw: str) -> Optional[str]:
@@ -170,6 +202,8 @@ async def run_usernames(
     batch_size: int,
     pause_seconds: float,
     progress_path: str,
+    max_flood_wait: int,
+    max_consecutive_not_found: int,
 ) -> None:
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     data = load_user_data(user_data_path)
@@ -201,6 +235,20 @@ async def run_usernames(
             with open(progress_path, "r", encoding="utf-8") as pf:
                 p = json.load(pf)
                 start_idx = int(p.get("next_index", 0))
+                resume_after = p.get("resume_after")
+                if p.get("aborted_by_flood") and resume_after:
+                    try:
+                        ra = datetime.strptime(resume_after, "%Y-%m-%d %H:%M:%S")
+                        if datetime.now() < ra:
+                            wait_min = int((ra - datetime.now()).total_seconds() // 60) + 1
+                            print(
+                                f"Импорт приостановлен из-за FloodWait. "
+                                f"Подождите ещё ~{wait_min} мин (до {resume_after}) и запустите снова.",
+                                flush=True,
+                            )
+                            return
+                    except ValueError:
+                        pass
         except Exception:
             start_idx = 0
 
@@ -213,51 +261,116 @@ async def run_usernames(
         f"Старт проверки ников: всего={total}, стартовый индекс={start_idx}, dry-run={'да' if dry_run else 'нет'}",
         flush=True,
     )
+    print(
+        f"Лимит FloodWait: если больше {max_flood_wait} сек — скрипт остановится и сохранит прогресс.",
+        flush=True,
+    )
 
     checked = 0
     added = 0
     already_exists = 0
     not_found = 0
+    aborted_by_flood = False
+    stopped_low_yield = False
+    progress_saved = False
+    resume_index = start_idx
+    consecutive_not_found = 0
+    flood_wait_secs = 0
 
     bot = Bot(token=token)
     try:
         for idx in range(start_idx, total):
+            resume_index = idx
             username = uniq_usernames[idx]
             checked += 1
             found_user_id: Optional[int] = None
 
-            # Первая попытка
-            try:
+            async def fetch_user_id() -> Optional[int]:
                 chat = await bot.get_chat(username)
-                found_user_id = int(chat.id)
+                return int(chat.id)
+
+            try:
+                found_user_id = await fetch_user_id()
             except Exception as e:
-                text = str(e).lower()
-                # Простая обработка flood wait: пробуем вытащить число секунд
-                if "retry after" in text:
-                    # fallback-парсер: берём первое число в строке
-                    secs = None
-                    tokenized = text.replace(",", " ").split()
-                    for t in tokenized:
-                        if t.isdigit():
-                            secs = int(t)
-                            break
-                    if secs is None:
-                        secs = 10
+                secs = parse_retry_after_seconds(e)
+                if secs is not None:
+                    flood_wait_secs = secs
+                    if secs > max_flood_wait:
+                        resume_at = (datetime.now() + timedelta(seconds=secs + 60)).strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        )
+                        print(
+                            (
+                                f"[{idx + 1}/{total}] FloodWait {secs} сек ({secs // 3600} ч) "
+                                f"для {username}. Останавливаю импорт (лимит {max_flood_wait} сек)."
+                            ),
+                            flush=True,
+                        )
+                        print(f"Продолжить можно после: {resume_at}", flush=True)
+                        if not dry_run:
+                            save_user_data(user_data_path, data)
+                        save_progress(
+                            progress_path,
+                            idx,
+                            total,
+                            {
+                                "aborted_by_flood": True,
+                                "flood_wait_seconds": secs,
+                                "resume_after": resume_at,
+                                "stats": {
+                                    "checked": checked,
+                                    "added": added,
+                                    "exists": already_exists,
+                                    "not_found": not_found,
+                                },
+                            },
+                        )
+                        aborted_by_flood = True
+                        progress_saved = True
+                        break
+
+                    wait_for = min(secs + 2, max_flood_wait)
                     print(
-                        f"[{idx + 1}/{total}] FloodWait для {username}: пауза {secs + 2} сек",
+                        f"[{idx + 1}/{total}] FloodWait {secs} сек, жду {wait_for} сек и повторяю...",
                         flush=True,
                     )
-                    await asyncio.sleep(secs + 2)
-                    # Повторяем после паузы
+                    await asyncio.sleep(wait_for)
                     try:
-                        chat = await bot.get_chat(username)
-                        found_user_id = int(chat.id)
-                    except Exception:
-                        pass
+                        found_user_id = await fetch_user_id()
+                    except Exception as retry_err:
+                        retry_secs = parse_retry_after_seconds(retry_err)
+                        if retry_secs is not None and retry_secs > max_flood_wait:
+                            resume_at = (datetime.now() + timedelta(seconds=retry_secs + 60)).strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            )
+                            print(
+                                f"[{idx + 1}/{total}] Повторный FloodWait {retry_secs} сек. Останавливаю.",
+                                flush=True,
+                            )
+                            if not dry_run:
+                                save_user_data(user_data_path, data)
+                            save_progress(
+                                progress_path,
+                                idx,
+                                total,
+                                {
+                                    "aborted_by_flood": True,
+                                    "flood_wait_seconds": retry_secs,
+                                    "resume_after": resume_at,
+                                },
+                            )
+                            aborted_by_flood = True
+                            progress_saved = True
+                            break
+
+            if aborted_by_flood:
+                break
 
             if found_user_id is None:
                 not_found += 1
+                consecutive_not_found += 1
             else:
+                consecutive_not_found = 0
                 key = str(found_user_id)
                 if key in data:
                     already_exists += 1
@@ -275,19 +388,53 @@ async def run_usernames(
                     }
                     added += 1
 
+            if (
+                max_consecutive_not_found > 0
+                and consecutive_not_found >= max_consecutive_not_found
+                and added == 0
+            ):
+                print(
+                    (
+                        f"[{idx + 1}/{total}] Подряд {consecutive_not_found} ников без добавления. "
+                        "Импорт остановлен — для холодной базы это обычно бесполезно."
+                    ),
+                    flush=True,
+                )
+                save_progress(
+                    progress_path,
+                    idx + 1,
+                    total,
+                    {
+                        "stopped_low_yield": True,
+                        "stats": {
+                            "checked": checked,
+                            "added": added,
+                            "exists": already_exists,
+                            "not_found": not_found,
+                        },
+                    },
+                )
+                if not dry_run:
+                    save_user_data(user_data_path, data)
+                stopped_low_yield = True
+                progress_saved = True
+                break
+
             # Сохраняем прогресс и (если не dry-run) базу
             if (idx + 1) % 25 == 0:
-                with open(progress_path, "w", encoding="utf-8") as pf:
-                    json.dump(
-                        {
-                            "next_index": idx + 1,
-                            "total": total,
-                            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                save_progress(
+                    progress_path,
+                    idx + 1,
+                    total,
+                    {
+                        "stats": {
+                            "checked": checked,
+                            "added": added,
+                            "exists": already_exists,
+                            "not_found": not_found,
                         },
-                        pf,
-                        ensure_ascii=False,
-                        indent=2,
-                    )
+                    },
+                )
                 if not dry_run:
                     save_user_data(user_data_path, data)
 
@@ -312,23 +459,36 @@ async def run_usernames(
                 )
                 await asyncio.sleep(pause_seconds)
 
+    except KeyboardInterrupt:
+        print("\nОстановлено вручную (Ctrl+C). Сохраняю прогресс...", flush=True)
+        save_progress(
+            progress_path,
+            resume_index,
+            total,
+            {"stopped_manual": True},
+        )
+        if not dry_run:
+            save_user_data(user_data_path, data)
+        progress_saved = True
     finally:
         await bot.session.close()
 
-    # финальное сохранение
-    with open(progress_path, "w", encoding="utf-8") as pf:
-        json.dump(
+    if not progress_saved and checked > 0:
+        save_progress(
+            progress_path,
+            min(start_idx + checked, total),
+            total,
             {
-                "next_index": total,
-                "total": total,
-                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "stats": {
+                    "checked": checked,
+                    "added": added,
+                    "exists": already_exists,
+                    "not_found": not_found,
+                },
             },
-            pf,
-            ensure_ascii=False,
-            indent=2,
         )
-    if not dry_run:
-        save_user_data(user_data_path, data)
+        if not dry_run:
+            save_user_data(user_data_path, data)
 
     print("Проверка ников завершена.")
     print(f"Всего ников в файле: {total}")
@@ -338,6 +498,19 @@ async def run_usernames(
     print(f"Не найдены/недоступны: {not_found}")
     print(f"Режим dry-run: {'да' if dry_run else 'нет'}")
     print(f"Файл прогресса: {progress_path}")
+    if aborted_by_flood:
+        hrs = flood_wait_secs // 3600
+        print(
+            f"Импорт остановлен из-за FloodWait (~{hrs} ч). "
+            "Запустите ту же команду позже — продолжит с сохранённого места.",
+            flush=True,
+        )
+    if stopped_low_yield:
+        print(
+            "Импорт остановлен: слишком много ников подряд не добавились. "
+            "Для продолжения увеличьте --max-consecutive-not-found или поставьте 0.",
+            flush=True,
+        )
 
 
 def main() -> None:
@@ -391,6 +564,18 @@ def main() -> None:
         default="username_import_progress.json",
         help="Файл для сохранения прогресса проверки ников",
     )
+    parser.add_argument(
+        "--max-flood-wait",
+        type=int,
+        default=180,
+        help="Если FloodWait больше этого значения (сек), скрипт завершится и сохранит прогресс",
+    )
+    parser.add_argument(
+        "--max-consecutive-not-found",
+        type=int,
+        default=150,
+        help="Остановить импорт, если подряд столько ников не добавились (0 = не останавливать)",
+    )
     args = parser.parse_args()
 
     token = os.getenv("TELEGRAM_TOKEN")
@@ -414,6 +599,8 @@ def main() -> None:
                 batch_size=args.batch_size,
                 pause_seconds=args.batch_pause,
                 progress_path=args.progress_file,
+                max_flood_wait=args.max_flood_wait,
+                max_consecutive_not_found=args.max_consecutive_not_found,
             )
         )
     else:
