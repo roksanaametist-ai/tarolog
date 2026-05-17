@@ -40,6 +40,12 @@ CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/follow_the_frensy").strip()
 GROUP_INVITE_URL = os.getenv("GROUP_INVITE_URL", "").strip()
 GROUP_BUTTON_TEXT = "👥 Наша группа"
 BACK_BUTTON_TEXT = "◀️ Назад"
+CONSULTATION_BUTTON_TEXT = "✨ Консультация эзотерика (платно)"
+CONSULTATION_URL = os.getenv("CONSULTATION_URL", "https://t.me/RoxanaAmetist").strip()
+CONSULTATION_MESSAGE = (
+    "Индивидуальная платная консультация: таро, астрология, дизайн человека.\n\n"
+    f"Записаться и узнать стоимость — напишите Роксане:\n{CONSULTATION_URL}"
+)
 
 channel_id = -1001887928983
 BOT_STATIC_ADMINS = {491482483}
@@ -598,6 +604,7 @@ async def send_nurture_checkout(chat_id: int, rec: dict, step: int) -> None:
     markup.row(
         types.InlineKeyboardButton(text="👥 Пригласить друга (+5)", callback_data="nurture_referral")
     )
+    markup.row(consultation_inline_button())
     await bot.send_message(chat_id, texts[step], reply_markup=markup.as_markup())
 
 
@@ -1343,9 +1350,16 @@ async def deliver_structured_spread(
     elif compact_single_card and summary_paragraph and not yes_no_mode:
         await bot.send_message(chat_id, summary_paragraph, parse_mode="Markdown")
 
+    finish_kb = InlineKeyboardBuilder()
+    finish_kb.row(consultation_inline_button())
     await bot.send_message(
         chat_id,
-        "Расклад завершён. Выберите дальнейшее действие:",
+        "Расклад завершён. Нужна личная консультация — кнопка ниже.",
+        reply_markup=finish_kb.as_markup(),
+    )
+    await bot.send_message(
+        chat_id,
+        "Выберите дальнейшее действие:",
         reply_markup=main_kb(chat_id),
     )
 
@@ -1747,6 +1761,7 @@ async def one_day_start(message: types.Message):
         builder.row(
             types.InlineKeyboardButton(text="Получить карту дня", callback_data="card_day_one")
         )
+        builder.row(consultation_inline_button())
         builder.row(types.InlineKeyboardButton(text=BACK_BUTTON_TEXT, callback_data="back_to_main"))
         await message.answer(
             "Карта дня покажет как пройдёт твой сегодняшний день!",
@@ -1967,13 +1982,16 @@ async def process_question(message: types.Message, state: FSMContext):
 
 #-----------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-@dp.message(lambda message: message.text == '👤 Консультация')
+@dp.message(F.text == CONSULTATION_BUTTON_TEXT)
 async def solo_reading(message: types.Message):
     logger.log_command(message.chat.id, message.text)
+    consult_kb = InlineKeyboardBuilder()
+    consult_kb.row(consultation_inline_button())
     await message.answer(
-        "Заказать индивидуальную консультацию с таро, астрологией, дизайном человека: @RoxanaAmetist",
-        reply_markup=back_kb(),
+        CONSULTATION_MESSAGE,
+        reply_markup=consult_kb.as_markup(),
     )
+    await message.answer("Выберите действие:", reply_markup=back_kb())
 
 
 @dp.message(lambda message: message.text == 'Ежедневные бесплатные прогнозы')
@@ -2127,6 +2145,7 @@ def sub():
     markup.row(sub3)
     markup.row(sub4)
     markup.row(sub5)
+    markup.row(consultation_inline_button())
     markup.row(types.InlineKeyboardButton(text=BACK_BUTTON_TEXT, callback_data="back_to_main"))
 
     return markup.as_markup()
@@ -2200,6 +2219,7 @@ async def submonth(call: CallbackQuery):
     pay_kb = InlineKeyboardBuilder()
     pay_kb.row(types.InlineKeyboardButton(text="💳 Оплатить сейчас", url=confirmation_url))
     pay_kb.row(types.InlineKeyboardButton(text="👥 Пригласить друга (+5)", callback_data="nurture_referral"))
+    pay_kb.row(consultation_inline_button())
     pay_kb.row(types.InlineKeyboardButton(text=BACK_BUTTON_TEXT, callback_data="back_to_main"))
     await bot.send_message(
         chat_id=message.chat.id,
@@ -2463,7 +2483,7 @@ async def get_stats(message: types.Message):
         '👥 Пригласить друга (+5)',
         GROUP_BUTTON_TEXT,
         '💎 Мой баланс',
-        '👤 Консультация',
+        CONSULTATION_BUTTON_TEXT,
         'ℹ️ Как работает бот',
         '🛠 Техподдержка',
         '💳 Оформить подписку',
@@ -2598,7 +2618,7 @@ def main_kb(chat_id):
     button_romantic = types.KeyboardButton(text='🔮✨Чувства Мысли Действия ✨🔮')
     button_yesno = types.KeyboardButton(text='🔮✨  Да/Нет  ✨🔮')
     button_pred = types.KeyboardButton(text='🔮✨Предупреждение от карт ✨🔮')
-    button_solo_reading = types.KeyboardButton(text='👤 Консультация')
+    button_solo_reading = types.KeyboardButton(text=CONSULTATION_BUTTON_TEXT)
     button_balance = types.KeyboardButton(text='💎 Мой баланс')
     button_how_it_works = types.KeyboardButton(text='ℹ️ Как работает бот')
     button_support = types.KeyboardButton(text='🛠 Техподдержка')
@@ -2628,9 +2648,22 @@ def main_kb(chat_id):
         builder.row(button_send_messages, button_admin_stats)
     return builder.as_markup(resize_keyboard=True)
 
+def consultation_reply_button() -> types.KeyboardButton:
+    return types.KeyboardButton(text=CONSULTATION_BUTTON_TEXT)
+
+
+def consultation_inline_button() -> types.InlineKeyboardButton:
+    return types.InlineKeyboardButton(text=CONSULTATION_BUTTON_TEXT, url=CONSULTATION_URL)
+
+
+def append_consultation_and_back_rows(builder: ReplyKeyboardBuilder) -> None:
+    builder.row(consultation_reply_button())
+    builder.row(types.KeyboardButton(text=BACK_BUTTON_TEXT))
+
+
 def back_kb():
     builder = ReplyKeyboardBuilder()
-    builder.row(types.KeyboardButton(text=BACK_BUTTON_TEXT))
+    append_consultation_and_back_rows(builder)
     return builder.as_markup(resize_keyboard=True)
 
 
@@ -2639,7 +2672,7 @@ def webapp_cards_kb(webapp_url: str, pick_label: str = "🃏 Выбрать ка
     builder.row(
         types.KeyboardButton(text=pick_label, web_app=types.WebAppInfo(url=webapp_url))
     )
-    builder.row(types.KeyboardButton(text=BACK_BUTTON_TEXT))
+    append_consultation_and_back_rows(builder)
     return builder.as_markup(resize_keyboard=True)
 
 #---------------------------------------------------------------------------------------------------------------------------
