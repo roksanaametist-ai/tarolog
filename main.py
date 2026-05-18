@@ -980,7 +980,7 @@ def build_admin_dashboard_html() -> str:
         f"<b>📅 Сегодня (клики в боте)</b>\n"
         f"  • «Оформить подписку»: <b>{today_sub}</b>\n"
         f"  • «Пригласить друга»: <b>{today_ref}</b>\n\n"
-        f"<i>Команды: /who123 ID · /stats_date123 · /denginam · /{ADMIN_CMD_TOTAL_USERS}</i>"
+        f"<i>Команды: /who123 ID или @username · /stats_date123 · /denginam · /{ADMIN_CMD_TOTAL_USERS}</i>"
     )
 
 
@@ -1019,33 +1019,86 @@ def format_user_lookup(target_id: int) -> str:
         if u.get("imported_from_user_txt"):
             lines.append("Источник: импорт user.txt\n")
 
-    logs = logger.get_user_stats(target_id)
-    if logs:
-        lines.append(f"\n<b>Лог бота</b> (всего записей: {len(logs)})\n")
-        for entry in logs[-8:]:
+    first_log, last_log, log_count = get_user_activity_bounds(target_id)
+    if log_count:
+        lines.append(
+            f"\n<b>Активность в боте</b> (записей: {log_count})\n"
+            f"Первая: {_esc(first_log.get('date'))} — {_esc(first_log.get('command'))}\n"
+            f"Последняя: {_esc(last_log.get('date'))} — {_esc(last_log.get('command'))}\n"
+        )
+        lines.append("\n<b>Последние действия</b>\n")
+        for entry in logger.get_user_stats(target_id)[-5:]:
             lines.append(
                 f"• {_esc(entry.get('command', '—'))} — {_esc(entry.get('date', '—'))}\n"
             )
     else:
-        lines.append("\nВ <code>logs.json</code> записей нет — возможно, не писал боту.\n")
+        lines.append(
+            "\nВ <code>logs.json</code> записей нет — не писал боту "
+            "(только в базе или импорт).\n"
+        )
 
     return "".join(lines)
 
 
-def parse_who_target_id(message: types.Message, command: Optional[CommandObject]) -> Optional[int]:
+def normalize_username_lookup(raw: str) -> str:
+    return raw.strip().lstrip("@").lower()
+
+
+def find_user_ids_by_username(nick: str) -> List[int]:
+    nick = normalize_username_lookup(nick)
+    user_data.data = user_data.load_data()
+    found: List[int] = []
+    for uid, u in user_data.data.items():
+        u_name = str(u.get("username", "")).lower().lstrip("@")
+        if u_name == nick:
+            try:
+                found.append(int(uid))
+            except ValueError:
+                continue
+    return found
+
+
+def get_user_activity_bounds(target_id: int):
+    logs = logger.get_user_stats(target_id)
+    if not logs:
+        return None, None, 0
+    logs_sorted = sorted(logs, key=lambda x: x.get("date", ""))
+    return logs_sorted[0], logs_sorted[-1], len(logs_sorted)
+
+
+def parse_who_target_token(message: types.Message, command: Optional[CommandObject]) -> Optional[str]:
     if command and command.args:
-        token = command.args.strip().split()[0]
-        if token.isdigit():
-            return int(token)
+        return command.args.strip().split()[0]
     text = message.text or ""
     bot_user = message.from_user
     if bot_user and bot_user.username:
         text = text.replace(f"@{bot_user.username}", "")
     parts = text.split()
     for part in parts[1:]:
-        if part.isdigit():
-            return int(part)
+        if part.isdigit() or part.startswith("@") or re.fullmatch(r"[A-Za-z0-9_]{4,32}", part):
+            return part
     return None
+
+
+async def resolve_who_target(message: types.Message, command: Optional[CommandObject]) -> Optional[int]:
+    token = parse_who_target_token(message, command)
+    if not token:
+        return None
+    if token.isdigit():
+        return int(token)
+
+    nick = normalize_username_lookup(token)
+    matches = find_user_ids_by_username(nick)
+    if len(matches) > 1:
+        raise ValueError(f"В базе несколько ID с @{nick}: {', '.join(map(str, matches))}")
+    if len(matches) == 1:
+        return matches[0]
+
+    try:
+        chat = await bot.get_chat(f"@{nick}")
+        return int(chat.id)
+    except Exception:
+        return None
 
 
 async def send_html_chunks(chat_id: int, html: str, chunk_size: int = 4000) -> None:
@@ -2312,12 +2365,17 @@ async def admin_who(message: types.Message, command: CommandObject):
     if not await ensure_bot_admin(message.chat.id):
         return
     logger.log_command(message.chat.id, message.text or "/who123")
-    target_id = parse_who_target_id(message, command)
+    try:
+        target_id = await resolve_who_target(message, command)
+    except ValueError as e:
+        await message.answer(str(e))
+        return
     if target_id is None:
         await message.answer(
-            "Формат: <code>/who123 telegram_id</code>\n"
-            "Пример: <code>/who123 365515529</code>\n"
-            "Также работает: <code>/who 365515529</code>",
+            "Формат:\n"
+            "<code>/who123 365515529</code>\n"
+            "<code>/who123 @username</code>\n\n"
+            "Покажет баланс и <b>первую/последнюю</b> активность в боте.",
             parse_mode=ParseMode.HTML,
         )
         return
