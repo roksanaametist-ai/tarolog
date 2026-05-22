@@ -980,7 +980,7 @@ def build_admin_dashboard_html() -> str:
         f"<b>📅 Сегодня (клики в боте)</b>\n"
         f"  • «Оформить подписку»: <b>{today_sub}</b>\n"
         f"  • «Пригласить друга»: <b>{today_ref}</b>\n\n"
-        f"<i>Команды: /who123 ID или @username · /stats_date123 · /denginam · /{ADMIN_CMD_TOTAL_USERS}</i>"
+        f"<i>Команды: /who123 · /grant123 @user · /stats_date123 · /denginam · /{ADMIN_CMD_TOTAL_USERS}</i>"
     )
 
 
@@ -2358,6 +2358,69 @@ async def check_payment_status(payment_id, chat_id, selected_price):
 @dp.pre_checkout_query(F.invoice_payload == "demo")
 async def process_pre_checkout_query(query: PreCheckoutQuery):
     await query.answer(ok=True)
+
+
+async def grant_questions_to_user(
+    target_id: int,
+    amount: int = 10**9,
+    username_hint: Optional[str] = None,
+) -> str:
+    user_data.add_user(target_id)
+    if username_hint:
+        user_data.data[str(target_id)]["username"] = username_hint.lstrip("@")
+        user_data.save_data()
+    user_data.set_user_questions(target_id, amount)
+    uname = username_hint or user_data.data.get(str(target_id), {}).get("username") or "—"
+    if uname != "—" and not str(uname).startswith("@"):
+        uname = f"@{uname}"
+    return (
+        f"✅ Выдано вопросов: <b>{uname}</b> (ID <code>{target_id}</code>)\n"
+        f"Баланс: <b>{user_data.get_user_questions(target_id)}</b>"
+    )
+
+
+@dp.message(Command("grant123"))
+async def admin_grant_questions(message: types.Message, command: CommandObject):
+    if not is_bot_admin(message.chat.id):
+        await message.answer("Нет доступа.")
+        return
+    logger.log_command(message.chat.id, message.text or "/grant123")
+    raw_args = (command.args or "").strip().split()
+    if not raw_args:
+        await message.answer(
+            "Формат:\n"
+            "<code>/grant123 @Hier5</code>\n"
+            "<code>/grant123 @user 500</code> — указать число вопросов\n"
+            "<code>/grant123 123456789</code> — по Telegram ID",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    token = raw_args[0]
+    amount = 10**9
+    if len(raw_args) > 1:
+        try:
+            amount = int(raw_args[1])
+        except ValueError:
+            await message.answer("Второй аргумент — число вопросов, например: <code>500</code>", parse_mode=ParseMode.HTML)
+            return
+        if amount < 1:
+            await message.answer("Число вопросов должно быть больше 0.")
+            return
+    try:
+        lookup_cmd = CommandObject(command="grant123", args=token)
+        target_id = await resolve_who_target(message, lookup_cmd)
+    except ValueError as e:
+        await message.answer(str(e))
+        return
+    if target_id is None:
+        await message.answer("Не удалось определить пользователя.")
+        return
+    username_hint = None if token.isdigit() else normalize_username_lookup(token)
+    try:
+        text = await grant_questions_to_user(target_id, amount=amount, username_hint=username_hint)
+        await message.answer(text, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        await message.answer(f"Ошибка при выдаче: {e}")
 
 
 @dp.message(Command("who", "who123"))
