@@ -1,6 +1,7 @@
 import html
 import logging
 import os
+from dotenv import load_dotenv
 from aiogram.fsm.storage.memory import MemoryStorage
 from openai import OpenAI
 from aiogram.fsm.context import FSMContext
@@ -21,6 +22,25 @@ from datetime import datetime, timedelta
 from yookassa import Configuration, Payment
 import uuid
 import random
+from pathlib import Path
+
+load_dotenv()
+
+
+def _resolve_bot_data_dir() -> Path:
+    configured = Path(os.getenv("BOT_DATA_DIR", "/data"))
+    if configured.exists():
+        return configured
+    return Path(__file__).resolve().parent
+
+
+BOT_DATA_DIR = _resolve_bot_data_dir()
+BOT_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def data_file(name: str) -> str:
+    return str(BOT_DATA_DIR / name)
+
 
 #MAKS API_TOKEN = '...'
 #DEMID API_TOKEN = '...'
@@ -33,8 +53,9 @@ client = OpenAI(
 )
 
 # URLs мини‑приложений (WebApp)
-CARDS_WEBAPP_URL = "https://followthefrensy.ru/cards"
-YESNO_WEBAPP_URL = "https://followthefrensy.ru/yesno"
+CARDS_WEBAPP_URL = os.getenv("CARDS_WEBAPP_URL", "https://followthefrensy.ru/cards").strip()
+YESNO_WEBAPP_URL = os.getenv("YESNO_WEBAPP_URL", "https://followthefrensy.ru/yesno").strip()
+LANDING_START_PARAM = os.getenv("LANDING_BOT_START_PARAM", "site").strip()
 
 CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/follow_the_frensy").strip()
 GROUP_INVITE_URL = os.getenv("GROUP_INVITE_URL", "").strip()
@@ -42,6 +63,7 @@ GROUP_BUTTON_TEXT = "👥 Наша группа"
 BACK_BUTTON_TEXT = "◀️ Назад"
 CONSULTATION_BUTTON_TEXT = "✨ Консультация эзотерика (платно)"
 CONSULTATION_URL = os.getenv("CONSULTATION_URL", "https://t.me/roxanaametist").strip()
+BOT_RETURN_URL = os.getenv("BOT_RETURN_URL", "https://t.me/Roxanaametist_Taro_bot").strip()
 CONSULTATION_MESSAGE = (
     "Приглашаем на индивидуальную платную консультацию ✨\n\n"
     "Таро, астрология, дизайн человека — персональный разбор вашей ситуации.\n\n"
@@ -151,7 +173,7 @@ class Logger:
         x_days_ago = (datetime.now() - timedelta(days=x)).strftime("%Y-%m-%d")
         return [log for log in self.logs if log["date"] >= x_days_ago]
 
-logger = Logger()
+logger = Logger(data_file("logs.json"))
 
 #-----------------------------------------------------------------------------------------------------------------------
 
@@ -194,8 +216,9 @@ class UserData:
         return self.data.get(str(chat_id), {}).get('questions', 0)
 
     def decrement_user_questions(self, chat_id: int) -> None:
-        if str(chat_id) in self.data:
-            self.data[str(chat_id)]['questions'] -= 1
+        key = str(chat_id)
+        if key in self.data and self.data[key]['questions'] > 0:
+            self.data[key]['questions'] -= 1
             self.save_data()
 
     def increment_user_questions(self, chat_id: int, amount: int) -> None:
@@ -333,7 +356,7 @@ class UserData:
         stats["top_referrers"] = top_referrers[:5]
         return stats
 
-user_data = UserData()
+user_data = UserData(data_file("user_data.json"))
 
 #-----------------------------------------------------------------------------------------------------------------------
 
@@ -362,12 +385,12 @@ class GrantState:
         self._save()
 
 
-grant_state = GrantState()
+grant_state = GrantState(data_file("grant_state.json"))
 
 # ----------------------------------------------------------------------------------------------------------------------
 # Дожим до оплаты подписки (нажали «Оформить подписку» / получили ссылку YooKassa)
 
-PAYMENT_NURTURE_FILE = "payment_nurture.json"
+PAYMENT_NURTURE_FILE = data_file("payment_nurture.json")
 
 PLAN_LABELS = {
     "sub_10_169": "10 запросов — 169 ₽",
@@ -505,8 +528,12 @@ payment_nurture = PaymentNurtureStore()
 
 
 def configure_yookassa() -> None:
-    Configuration.account_id = int(os.getenv("YOOKASSA_ACCOUNT_ID"))
-    Configuration.secret_key = os.getenv("YOOKASSA_SECRET_KEY")
+    account_id = os.getenv("YOOKASSA_ACCOUNT_ID")
+    secret_key = os.getenv("YOOKASSA_SECRET_KEY")
+    if not account_id or not secret_key:
+        raise ValueError("YOOKASSA_ACCOUNT_ID и YOOKASSA_SECRET_KEY должны быть заданы в окружении")
+    Configuration.account_id = int(account_id)
+    Configuration.secret_key = secret_key
 
 
 def user_has_active_subscription(chat_id: int) -> bool:
@@ -719,7 +746,7 @@ class StatusData:
             return True
         return self.data[str(chat_id)] == 0
 
-status_data = StatusData()
+status_data = StatusData(data_file("status_data.json"))
 
 
 #-----------------------------------------------------------------------------------------------------------------------
@@ -729,12 +756,21 @@ class PhotoSender:
         self.bot = bot
 
     async def send_photo(self, chat_id, photo_path, caption=None, parse_mode=None, reply_markup=None):
+        if not photo_path or not os.path.isfile(photo_path):
+            if caption:
+                await self.bot.send_message(
+                    chat_id, caption, parse_mode=parse_mode, reply_markup=reply_markup
+                )
+            return
         try:
             photo = FSInputFile(photo_path)
             await self.bot.send_photo(chat_id, photo=photo, caption=caption, parse_mode=parse_mode, reply_markup=reply_markup)
         except Exception as e:
             print(f"Ошибка отправки фото: {e}")
-            #Макс Лох 228
+            if caption:
+                await self.bot.send_message(
+                    chat_id, caption, parse_mode=parse_mode, reply_markup=reply_markup
+                )
 
     async def send_photos(self, chat_id, photo_paths, caption=None, parse_mode=None):
         for photo_path in photo_paths:
@@ -769,7 +805,7 @@ class OrderNumber:
     def get_order_number(self):
         return self.order_number
 
-order_manager = OrderNumber()
+order_manager = OrderNumber(data_file("order_number.json"))
 
 #-----------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -780,24 +816,31 @@ class OneDayCard:
 
     def load_data(self):
         try:
-            with open(self.filename, 'r') as file:
-                return json.load(file)
+            with open(self.filename, 'r', encoding='utf-8') as file:
+                raw = json.load(file)
+            return {str(k): v for k, v in raw.items()}
         except FileNotFoundError:
             return {}
 
     def save_data(self):
-        with open(self.filename, 'w') as file:
-            json.dump(self.data, file)
+        with open(self.filename, 'w', encoding='utf-8') as file:
+            json.dump(self.data, file, ensure_ascii=False, indent=2)
+
+    @staticmethod
+    def _key(chat_id) -> str:
+        return str(chat_id)
 
     def add_chat(self, chat_id):
-        if chat_id not in self.data:
-            self.data[chat_id] = {'map': None, 'date': None}
+        key = self._key(chat_id)
+        if key not in self.data:
+            self.data[key] = {'map': None, 'date': None}
             self.save_data()
 
     def update_date_if_needed(self, chat_id):
         today = datetime.now().date()
-        if chat_id in self.data:
-            chat_info = self.data[chat_id]
+        key = self._key(chat_id)
+        if key in self.data:
+            chat_info = self.data[key]
             current_date = chat_info.get('date')
 
             if current_date is None or current_date != str(today):
@@ -807,14 +850,15 @@ class OneDayCard:
         return False
 
     def select_random_card(self, chat_id):
-        if chat_id in self.data:
-            selected_card = random.randrange(1,78)
-            self.data[chat_id]['map'] = selected_card
+        key = self._key(chat_id)
+        if key in self.data:
+            selected_card = random.randrange(1, 79)
+            self.data[key]['map'] = selected_card
             self.save_data()
             return selected_card
         return None
 
-one_card = OneDayCard()
+one_card = OneDayCard(data_file("chat_data.json"))
 
 #-----------------------------------------------------------------------------------------------------------------------
 
@@ -848,7 +892,7 @@ class AgreementManager:
         agreements[str(user_id)] = True
         self.save_agreements(agreements)
 
-agreement_manager = AgreementManager()
+agreement_manager = AgreementManager(data_file("user_agreements.json"))
 
 def get_agreement_keyboard():
     builder = InlineKeyboardBuilder()
@@ -882,7 +926,7 @@ class AdminManager:
         self.save_admins(admins)
 
 
-admin_manager = AdminManager()
+admin_manager = AdminManager(data_file("admins.json"))
 
 
 def is_bot_admin(chat_id: int) -> bool:
@@ -1127,20 +1171,27 @@ def split_text_into_paragraphs(text):
     return paragraphs
 
 async def get_card_names(card_list):
-    return ", ".join([tarot_cards[card] for card in card_list])
+    return ", ".join([tarot_cards.get(card, str(card)) for card in card_list])
 
-async def get_tarot_reading(user_message):
+TAROT_MODEL = os.getenv("GROQ_TAROT_MODEL", "llama-3.3-70b-versatile").strip()
+
+
+async def get_tarot_reading(user_message: str) -> str:
     last_err = None
     for attempt in range(3):
         try:
             response = client.chat.completions.create(
-                model="llama-3.1-8b-instant",
+                model=TAROT_MODEL,
+                temperature=0.4,
                 messages=[
                     {
                         "role": "system",
                         "content": (
-                            "Ты опытный таролог. Даёшь точные, бережные трактовки на русском языке. "
-                            "Следуй формату запроса пользователя."
+                            "Ты опытный таролог-консультант. Пишешь только по-русски. "
+                            "Главная цель — ответить на КОНКРЕТНЫЙ вопрос пользователя через выпавшие карты. "
+                            "Не давай общие словарные значения карт сами по себе: каждая фраза должна "
+                            "связывать значение карты с ситуацией из вопроса (люди, чувства, решение, исход). "
+                            "Строго следуй формату ответа из запроса пользователя."
                         ),
                     },
                     {"role": "user", "content": user_message},
@@ -1152,8 +1203,8 @@ async def get_tarot_reading(user_message):
             last_err = ValueError("Empty model response")
         except Exception as e:
             last_err = e
+            logging.warning("Groq tarot attempt %s failed: %s", attempt + 1, e)
 
-        # небольшой бэкофф
         await asyncio.sleep(1 + attempt)
 
     raise RuntimeError(f"Groq request failed after retries: {last_err}")
@@ -1173,6 +1224,11 @@ async def get_tarot_reading_structured(
     """
     expected_n = len(card_meanings_in_order)
     roles = card_roles_in_order or []
+    question = (question or "").strip()
+    if not question:
+        question = "О чём говорят выпавшие карты в текущей жизненной ситуации пользователя?"
+        logging.warning("Empty user question — using generic fallback question")
+
     lines = []
     for i, meaning in enumerate(card_meanings_in_order):
         role_prefix = f" ({roles[i]})" if i < len(roles) and roles[i] else ""
@@ -1180,26 +1236,41 @@ async def get_tarot_reading_structured(
 
     def build_prompt(strict: bool) -> str:
         json_example = json.dumps(
-            {"card_interpretations": ["..."] * expected_n, "summary": "..."},
+            {
+                "card_interpretations": [
+                    f"Ответ по карте {i+1} именно на вопрос пользователя..."
+                    for i in range(expected_n)
+                ],
+                "summary": "Прямой итоговый ответ на вопрос пользователя...",
+            },
             ensure_ascii=False,
             separators=(",", ":"),
         )
         strict_line = "- Не допускаются пустые трактовки.\n" if strict else ""
+        role_line = (
+            "- Учитывай роль карты в раскладе (чувства/мысли/действия и т.п.), "
+            "но всё равно отвечай в контексте вопроса пользователя.\n"
+            if any(roles)
+            else ""
+        )
         return (
-            f"Вопрос пользователя:\n{question}\n\n"
-            f"Карты (строго по порядку; названия выпавших карт):\n"
+            f"ВОПРОС ПОЛЬЗОВАТЕЛЯ (это главное — ответь именно на него):\n«{question}»\n\n"
+            f"Выпавшие карты (по порядку):\n"
             + "\n".join(lines)
             + "\n\n"
-            + "Ответь СТРОГО в JSON без Markdown и без лишнего текста, в одну строку.\n"
+            + "Ответь СТРОГО одним JSON-объектом без Markdown и без текста вокруг.\n"
             + "Формат:\n"
             + f"{json_example}\n\n"
-            + "Правила:\n"
-            + f"- Дай РОВНО {expected_n} трактовок, по одной на каждую карту в том же порядке.\n"
-            + "- Каждая трактовка должна быть привязана к вопросу и роли карты (если роль указана).\n"
-            + "- Если карт больше одной, summary ОБЯЗАТЕЛЕН: итоговый ответ на вопрос с учетом всех карт.\n"
-            + "- Не перечисляй названия карт, не пиши списки карт, не добавляй лишние поля.\n"
-            + "- Не используй слова вроде SUMMARY/ИТОГ/РЕЗЮМЕ как маркеры.\n"
-            + "- Пиши по-русски.\n"
+            + "Правила (по приоритету):\n"
+            + "1) Каждая трактовка ОБЯЗАНА отвечать на вопрос пользователя через смысл карты.\n"
+            + "2) Запрещены абстрактные описания «карта означает перемены/баланс» без связи с вопросом.\n"
+            + "3) В каждой трактовке хотя бы раз явно опирайся на тему вопроса "
+            + "(имена/отношения/решение/срок — как в вопросе).\n"
+            + f"4) Дай РОВНО {expected_n} трактовок, строго по порядку карт.\n"
+            + "5) summary — краткий прямой ответ на вопрос пользователя с учётом всех карт.\n"
+            + "6) Не перечисляй названия карт списком, не добавляй лишние поля JSON.\n"
+            + "7) Пиши по-русски, 2–5 предложений на трактовку.\n"
+            + role_line
             + strict_line
         )
 
@@ -1213,31 +1284,37 @@ async def get_tarot_reading_structured(
             raise ValueError("Not a JSON object")
         return data
 
-    # 1) Первая попытка — обычная
     data = None
     try:
         data = await call_and_parse(strict=False)
-    except Exception:
+    except Exception as e:
+        logging.warning("Structured tarot parse failed: %s", e)
         data = {"card_interpretations": [], "summary": ""}
 
-    # 2) Валидация и возможный retry — строгий
     ci = data.get("card_interpretations") if isinstance(data, dict) else None
     summary = data.get("summary") if isinstance(data, dict) else None
-    ok_ci = isinstance(ci, list) and len(ci) == expected_n and all(isinstance(x, str) and x.strip() for x in ci)
+    ok_ci = (
+        isinstance(ci, list)
+        and len(ci) == expected_n
+        and all(isinstance(x, str) and x.strip() for x in ci)
+    )
     ok_summary = True if expected_n <= 1 else isinstance(summary, str) and summary.strip()
     if not (ok_ci and ok_summary):
         try:
             data2 = await call_and_parse(strict=True)
             ci2 = data2.get("card_interpretations")
             summary2 = data2.get("summary")
-            ok_ci2 = isinstance(ci2, list) and len(ci2) == expected_n and all(isinstance(x, str) and x.strip() for x in ci2)
+            ok_ci2 = (
+                isinstance(ci2, list)
+                and len(ci2) == expected_n
+                and all(isinstance(x, str) and x.strip() for x in ci2)
+            )
             ok_summary2 = True if expected_n <= 1 else isinstance(summary2, str) and summary2.strip()
             if ok_ci2 and ok_summary2:
                 return data2
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning("Structured tarot strict retry failed: %s", e)
 
-    # Фоллбек: гарантируем длину массива, summary может быть пустым (но бот не упадёт)
     if not isinstance(ci, list):
         ci = []
     ci = [(x.strip() if isinstance(x, str) else "") for x in ci]
@@ -1289,13 +1366,19 @@ def parse_comma_separated_cards(text: str) -> List[Dict[str, Any]]:
                 if key in name_key or name_key in key:
                     path = card_path
                     break
-        label = tarot_cards[path] if path else part
+        label = tarot_cards.get(path, part) if path else part
         cards.append({"path": path, "label": label})
     return cards
 
 
 def cards_from_webapp_paths(paths: List[str]) -> List[Dict[str, Any]]:
-    return [{"path": p, "label": tarot_cards[p]} for p in paths]
+    cards: List[Dict[str, Any]] = []
+    for p in paths:
+        label = tarot_cards.get(p)
+        if not label and p:
+            label = os.path.splitext(os.path.basename(p))[0]
+        cards.append({"path": p, "label": label or p})
+    return cards
 
 
 async def fetch_structured_reading(
@@ -1338,75 +1421,85 @@ async def deliver_structured_spread(
         await bot.send_message(chat_id, "Не удалось распознать карты. Повторите ввод.")
         return
 
+    question_text = (question_text or "").strip()
+    if not question_text:
+        logging.warning("deliver_structured_spread: empty question for chat_id=%s", chat_id)
+
     prompt = question_text
     if yes_no_mode:
         prompt += (
-            "\n\nВажно: в поле summary сначала напиши однозначный ответ «Да» или «Нет», "
-            "затем краткое пояснение по карте."
+            "\n\nВажно: в поле summary сначала напиши однозначный ответ «Да» или «Нет» "
+            "именно на вопрос пользователя, затем краткое пояснение по карте."
         )
 
     card_labels = [c["label"] for c in cards]
     structured = await fetch_structured_reading(prompt, card_labels, card_roles)
 
-    if decrement_balance and _should_decrement_questions(chat_id):
+    reading_ok = structured_is_complete(structured, expected_n)
+    if decrement_balance and reading_ok and _should_decrement_questions(chat_id):
         user_data.decrement_user_questions(chat_id)
 
     per_card_paragraphs = structured.get("card_interpretations") or []
     while len(per_card_paragraphs) < expected_n:
         per_card_paragraphs.append("")
+    q_hint = question_text or "вашу ситуацию"
     for idx in range(expected_n):
         raw = per_card_paragraphs[idx] if idx < len(per_card_paragraphs) else ""
         if not (isinstance(raw, str) and raw.strip()):
+            role = ""
+            if card_roles and idx < len(card_roles) and card_roles[idx]:
+                role = f" ({card_roles[idx]})"
             per_card_paragraphs[idx] = (
-                f"По вашему вопросу карта раскрывает тему: {cards[idx]['label']}."
+                f"Карта «{cards[idx]['label']}»{role} по вопросу «{q_hint}»: "
+                f"сейчас энергия этой карты указывает на важные нюансы вашей ситуации. "
+                f"Повторите расклад ещё раз, если нужен более подробный ответ."
             )
 
     summary_paragraph = (structured.get("summary") or "").strip()
     fallback_roles = role_labels_for_fallback or card_roles or []
     if expected_n > 1 and not summary_paragraph:
-        summary_paragraph = "Итог по раскладу:\n\n" + "\n\n".join(
-            [
-                (
-                    f"{fallback_roles[i]}: {per_card_paragraphs[i]}"
-                    if i < len(fallback_roles) and fallback_roles[i]
-                    else f"{i + 1}. {cards[i]['label']}: {per_card_paragraphs[i]}"
-                )
-                for i in range(expected_n)
-            ]
+        summary_paragraph = (
+            f"Итог по вопросу «{q_hint}»:\n\n"
+            + "\n\n".join(
+                [
+                    (
+                        f"{fallback_roles[i]}: {per_card_paragraphs[i]}"
+                        if i < len(fallback_roles) and fallback_roles[i]
+                        else f"{i + 1}. {cards[i]['label']}: {per_card_paragraphs[i]}"
+                    )
+                    for i in range(expected_n)
+                ]
+            )
         )
     if yes_no_mode and not summary_paragraph and per_card_paragraphs[0].strip():
         summary_paragraph = per_card_paragraphs[0].strip()
 
+    # Без Markdown: символы _ * [ ] из текста модели ломают отправку в Telegram
     if show_card_list_header and not compact_single_card:
         names_text_lines = [f"{idx + 1}. {c['label']}" for idx, c in enumerate(cards)]
         header = "Перечисление выпавших карт:\n" + "\n".join(names_text_lines)
-        await bot.send_message(chat_id, header, parse_mode="Markdown")
+        await bot.send_message(chat_id, header)
 
     for idx, card in enumerate(cards):
         interp = per_card_paragraphs[idx]
         caption = f"Карта {idx + 1}: {card['label']}\n\n{interp}".strip()
         card_path = card.get("path")
         if card_path:
-            await photo_sender.send_photo(
-                chat_id, card_path, caption=caption, parse_mode="Markdown"
-            )
+            await photo_sender.send_photo(chat_id, card_path, caption=caption)
         else:
-            await bot.send_message(chat_id, caption, parse_mode="Markdown")
+            await bot.send_message(chat_id, caption)
         if not compact_single_card:
             await asyncio.sleep(3)
 
     if yes_no_mode and summary_paragraph:
-        await bot.send_message(
-            chat_id, f"Ответ по раскладу:\n\n{summary_paragraph}", parse_mode="Markdown"
-        )
+        await bot.send_message(chat_id, f"Ответ по раскладу:\n\n{summary_paragraph}")
     elif expected_n > 1 and summary_paragraph:
         await bot.send_message(
             chat_id,
             f"Итоговый ответ по раскладу:\n\n{summary_paragraph}",
-            parse_mode="Markdown",
         )
     elif compact_single_card and summary_paragraph and not yes_no_mode:
-        await bot.send_message(chat_id, summary_paragraph, parse_mode="Markdown")
+        await bot.send_message(chat_id, summary_paragraph)
 
     finish_kb = InlineKeyboardBuilder()
     finish_kb.row(consultation_inline_button())
@@ -1421,7 +1514,7 @@ async def deliver_structured_spread(
         reply_markup=main_kb(chat_id),
     )
 
-PAYMENT_FILE = "payment_data.json"
+PAYMENT_FILE = data_file("payment_data.json")
 
 def initialize_payment_file():
     """Инициализация файла с данными, если он отсутствует."""
@@ -1539,6 +1632,22 @@ async def periodic_30day_refill():
 #     await bot.send_message(message.chat.id, f"У вас доступно {user_data.get_user_questions(message.chat.id)} вопросов")
 
 
+def _mark_landing_registration(chat_id: int) -> None:
+    key = str(chat_id)
+    if key not in user_data.data:
+        return
+    if user_data.data[key].get("registration_source"):
+        return
+    user_data.data[key]["registration_source"] = "landing"
+    user_data.save_data()
+
+
+def _landing_welcome_extra(chat_id: int) -> str:
+    if user_data.data.get(str(chat_id), {}).get("registration_source") == "landing":
+        return "\n\n🌐 Вы пришли с сайта — у вас 5 бесплатных раскладов для старта."
+    return ""
+
+
 @dp.message(CommandStart())
 async def send_welcome(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -1547,7 +1656,7 @@ async def send_welcome(message: types.Message, state: FSMContext):
     is_new_user = not user_data.has_user(chat_id)
     user_data.add_user(chat_id)
 
-    # Реферальный параметр: /start ref_<chat_id>
+    # Реферальный параметр: /start ref_<chat_id> или переход с лендинга: /start site
     referrer_id = None
     text = (message.text or "").strip()
     parts = text.split()
@@ -1557,6 +1666,8 @@ async def send_welcome(message: types.Message, state: FSMContext):
             raw_id = payload[4:]
             if raw_id.isdigit():
                 referrer_id = int(raw_id)
+        elif LANDING_START_PARAM and payload == LANDING_START_PARAM:
+            _mark_landing_registration(chat_id)
 
     if is_new_user and referrer_id and referrer_id != chat_id:
         # Начисляем бонус только один раз за действительно нового пользователя
@@ -1579,7 +1690,10 @@ async def send_welcome(message: types.Message, state: FSMContext):
     else:
         await message.answer(
             "Привет!\nЯ твой персональный бот-таролог 🤖\n"
-            "Воспользуйся кнопками ниже, чтобы взаимодействовать со мной:", reply_markup=main_kb(message.chat.id))
+            "Воспользуйся кнопками ниже, чтобы взаимодействовать со мной:"
+            + _landing_welcome_extra(chat_id),
+            reply_markup=main_kb(message.chat.id),
+        )
         await state.clear()
         await bot.send_message(message.chat.id,
                                f"У вас доступно {user_data.get_user_questions(message.chat.id)} вопросов")
@@ -1594,7 +1708,8 @@ async def process_agreement(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.answer("Спасибо за согласие! Теперь вы можете продолжить использование бота.")
         await callback.message.answer(
             "Привет!\nЯ твой персональный бот-таролог 🤖\n"
-            "Воспользуйся кнопками ниже, чтобы взаимодействовать со мной:",
+            "Воспользуйся кнопками ниже, чтобы взаимодействовать со мной:"
+            + _landing_welcome_extra(callback.message.chat.id),
             reply_markup=main_kb(callback.message.chat.id))
         await state.clear()
         await callback.message.answer(
@@ -1603,22 +1718,6 @@ async def process_agreement(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.answer("Вы отказались от соглашения. Пожалуйста, начните снова, нажав /start.")
 
     await callback.answer()
-#lox2.0
-
-@dp.callback_query(lambda c: c.data in ['agree', 'disagree'])
-async def process_agreement(callback_query: types.CallbackQuery, state: FSMContext):
-    user_id = callback_query.from_user.id
-    if callback_query.data == 'agree':
-        agreement_manager.add_user_agreement(user_id)
-        await callback_query.message.answer("Спасибо за согласие! Теперь вы можете продолжить использование бота.")
-        await callback_query.message.answer(
-            "Привет!\nЯ твой персональный бот-таролог 🤖\n"
-            "Воспользуйся кнопками ниже, чтобы взаимодействовать со мной:", reply_markup=main_kb(callback_query.message.chat.id))
-        await state.clear()
-        await bot.send_message(callback_query.chat.id,
-                               f"У вас доступно {user_data.get_user_questions(callback_query.message.chat.id)} вопросов")
-    else:
-        await callback_query.message.answer("Вы отказались от соглашения. Пожалуйста, начните снова, нажав /start.")
 
 
 @dp.message(lambda message: message.text == '🔮✨  Задать вопрос  ✨🔮')
@@ -1639,7 +1738,7 @@ async def ask_question(message: types.Message, state: FSMContext):
         if subscription_end and datetime.now() > subscription_end:
             await message.answer("Ваша подписка закончилась.", reply_markup=back_kb())
 
-        if user_data.get_user_questions(chat_id) >= 0:
+        if user_data.get_user_questions(chat_id) > 0:
             await state.clear()
             await state.set_state(Form.question)
             await message.answer("Напишите свой вопрос для расклада: 👇", reply_markup=back_kb())
@@ -1682,12 +1781,12 @@ async def process_question(message: types.Message, state: FSMContext):
             manual_cards,
         )
         await state.clear()
-    elif F.content_type == ContentType.WEB_APP_DATA:
+    elif message.web_app_data:
         data = json.loads(message.web_app_data.data)
         cards12 = data["cards"]
         msg = await bot.send_message(chat_id, "Происходит магия...")
         data_state = await state.get_data()
-        question_text = data_state["question"]
+        question_text = data_state.get("question", "")
         await bot.delete_message(chat_id, msg.message_id)
         await deliver_structured_spread(
             chat_id,
@@ -1719,7 +1818,7 @@ async def ask_question(message: types.Message, state: FSMContext):
         if subscription_end and datetime.now() > subscription_end:
             await message.answer("Ваша подписка закончилась.", reply_markup=back_kb())
 
-        if user_data.get_user_questions(chat_id) >= 0:
+        if user_data.get_user_questions(chat_id) > 0:
             await state.clear()
             await state.set_state(Form2.question)
             await message.answer(
@@ -1774,7 +1873,7 @@ async def process_question(message: types.Message, state: FSMContext):
             compact_single_card=True,
         )
         await state.clear()
-    elif F.content_type == ContentType.WEB_APP_DATA:
+    elif message.web_app_data:
         data = json.loads(message.web_app_data.data)
         cards12 = data["cards"]
         msg = await bot.send_message(chat_id, "Происходит магия...")
@@ -1836,7 +1935,7 @@ async def one_day_finish(call: CallbackQuery):
     msg = await bot.send_message(chat_id, "Происходит магия...")
     selected_card = one_card.select_random_card(chat_id)
     sel_card = f"static/card{selected_card}.jpg"
-    carda = tarot_cards[sel_card]
+    carda = tarot_cards.get(sel_card, f"Карта {selected_card}")
     await bot.delete_message(chat_id, msg.message_id)
     await deliver_structured_spread(
         chat_id,
@@ -1883,7 +1982,7 @@ async def ask_roman_quest(message: types.Message, state: FSMContext):
         if subscription_end and datetime.now() > subscription_end:
             await message.answer("Ваша подписка закончилась.", reply_markup=back_kb())
 
-        if user_data.get_user_questions(chat_id) >= 0:
+        if user_data.get_user_questions(chat_id) > 0:
             await state.clear()
             await state.set_state(romantic.quest)
             await bot.send_message(
@@ -1927,7 +2026,7 @@ async def process_question(message: types.Message, state: FSMContext):
             role_labels_for_fallback=ROMANTIC_CARD_ROLES,
         )
         await state.clear()
-    elif F.content_type == ContentType.WEB_APP_DATA:
+    elif message.web_app_data:
         data = json.loads(message.web_app_data.data)
         cards12 = data["cards"]
         msg = await bot.send_message(chat_id, "Происходит магия...")
@@ -1979,7 +2078,7 @@ async def ask_roman_quest1(message: types.Message, state: FSMContext):
         if subscription_end and datetime.now() > subscription_end:
             await message.answer("Ваша подписка закончилась.", reply_markup=back_kb())
 
-        if user_data.get_user_questions(chat_id) >= 0:
+        if user_data.get_user_questions(chat_id) > 0:
             await state.clear()
             await state.set_state(dangerous.dan)
             await bot.send_message(
@@ -2022,7 +2121,7 @@ async def process_question(message: types.Message, state: FSMContext):
             role_labels_for_fallback=DANGEROUS_CARD_ROLES,
         )
         await state.clear()
-    elif F.content_type == ContentType.WEB_APP_DATA:
+    elif message.web_app_data:
         data = json.loads(message.web_app_data.data)
         cards12 = data["cards"]
         msg = await bot.send_message(chat_id, "Происходит магия...")
@@ -2240,9 +2339,22 @@ async def submonth(call: CallbackQuery):
     plan_key = call.data
     await call.message.delete()
 
-    configure_yookassa()
-
     email = user_data.get_user_email(chat_id)
+    if not email:
+        await bot.send_message(
+            chat_id,
+            "Для оплаты сначала укажите email через «💳 Оформить подписку».",
+            reply_markup=back_kb(),
+        )
+        await call.answer()
+        return
+
+    try:
+        configure_yookassa()
+    except (ValueError, TypeError) as e:
+        await bot.send_message(chat_id, f"Оплата временно недоступна: {e}", reply_markup=back_kb())
+        await call.answer()
+        return
 
     order_manager.increment_order_number()
 
@@ -2255,7 +2367,7 @@ async def submonth(call: CallbackQuery):
         "capture": True,
         "confirmation": {
             "type": "redirect",
-            "return_url": "https://t.me/Roxanaametist_Taro_bot"
+            "return_url": BOT_RETURN_URL
         },
         "description": "Оплата подписки",
         "metadata": {
@@ -2425,7 +2537,7 @@ async def admin_grant_questions(message: types.Message, command: CommandObject):
 
 @dp.message(Command("who", "who123"))
 async def admin_who(message: types.Message, command: CommandObject):
-    if not await ensure_bot_admin(message.chat.id):
+    if not await ensure_bot_admin(message):
         return
     logger.log_command(message.chat.id, message.text or "/who123")
     try:
@@ -2485,9 +2597,16 @@ async def show_payment_data(message: types.Message):
 
 
 @dp.message(F.successful_payment)
-async def process_payment(message):
-    chat_id = message.from_user.id
+async def process_payment(message: types.Message):
+    chat_id = message.chat.id
     inv_pay = message.successful_payment.total_amount
+    logger.log_command(chat_id, f"successful_payment:{inv_pay}")
+    if inv_pay == GOODS.get("demo", 1):
+        user_data.increment_user_questions(chat_id, 1)
+    await message.answer(
+        "Оплата получена! Спасибо.",
+        reply_markup=main_kb(chat_id),
+    )
 
 
 @dp.message(Command("statistika123"))
@@ -2684,8 +2803,37 @@ async def get_pulled(message: types.Message):
             user_data.increment_user_questions(pid_chat_id, count1)
 
 #-----------------------------------------------------Промокоды---------------------------------------------------------
-# Словарь для хранения использованных промокодов
-used_promocodes = {}
+
+class PromocodeStore:
+    def __init__(self, filename: str = "used_promocodes.json"):
+        self.filename = filename
+        self.data: Dict[str, List[str]] = self._load()
+
+    def _load(self) -> Dict[str, List[str]]:
+        try:
+            with open(self.filename, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            return {str(k): list(v) for k, v in raw.items()}
+        except FileNotFoundError:
+            return {}
+
+    def _save(self) -> None:
+        with open(self.filename, "w", encoding="utf-8") as f:
+            json.dump(self.data, f, ensure_ascii=False, indent=2)
+
+    def is_used(self, chat_id: int, code: str) -> bool:
+        return code in self.data.get(str(chat_id), [])
+
+    def mark_used(self, chat_id: int, code: str) -> None:
+        key = str(chat_id)
+        if key not in self.data:
+            self.data[key] = []
+        if code not in self.data[key]:
+            self.data[key].append(code)
+            self._save()
+
+
+promocode_store = PromocodeStore(data_file("used_promocodes.json"))
 
 # Список допустимых промокодов
 valid_promocodes = [
@@ -2722,20 +2870,14 @@ async def apply_promocode(message: types.Message, state: FSMContext):
     chat_id = message.chat.id
     await state.clear()
     if message.text in valid_promocodes:
-        # Проверяем, использовал ли пользователь промокод ранее
-        if chat_id in used_promocodes and message.text in used_promocodes[chat_id]:
+        if promocode_store.is_used(chat_id, message.text):
             await message.answer(
                 "Вы уже использовали этот промокод. Пожалуйста, попробуйте другой. ⚠️",
                 reply_markup=main_kb(chat_id),
             )
         else:
-            # Начисляем вопросы и сохраняем информацию об использовании промокода
-            user_data.increment_user_questions(chat_id, 1000)
-
-            # Добавляем использованный промокод в список
-            if chat_id not in used_promocodes:
-                used_promocodes[chat_id] = []
-            used_promocodes[chat_id].append(message.text)
+            user_data.increment_user_questions(chat_id, 100)
+            promocode_store.mark_used(chat_id, message.text)
 
             await message.answer(
                 "Промокод активирован! Вам начислено 100 вопросов 🎉",
@@ -2892,7 +3034,7 @@ async def check_sub(message: types.Message):
         else:
             await bot.send_message(chat_id,
                                    f"Вы не подписаны на канал! Вот ссылка на канал: {CHANNEL_URL}")
-    except:
+    except Exception:
         await bot.send_message(chat_id, "Ошибка. Обратитесь в техподдержку")
 
 #-------------------------------------------------------------------------------------------------------------------------
@@ -2901,7 +3043,7 @@ async def main():
 
     # Арканы (1-22)
     arcana_names = [
-        "Дурак", "Маг", "Верховная Жрица", "Императрица", "Император", "Верховная жрица",
+        "Дурак", "Маг", "Верховная Жрица", "Императрица", "Император", "Иерофант",
         "Влюбленные", "Колесница", "Сила", "Отшельник", "Колесо Фортуны",
         "Правосудие", "Повешенный", "Смерть", "Умеренность", "Дьявол",
         "Башня", "Звезда", "Луна", "Солнце", "Суд", "Мир"

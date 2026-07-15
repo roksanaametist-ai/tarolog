@@ -1,0 +1,15 @@
+# Конфиг Amvera для лендинга при деплое из ветки `landing`.
+# На ветке landing этот файл копируется в корень как amvera.yml
+# (см. DEPLOY-AMVERA.md, раздел «Лендинг»).
+---
+meta:
+  environment: python
+  toolchain:
+    name: pip
+    version: "3.12"
+build:
+  requirementsPath: landing/requirements.txt
+run:
+  scriptName: landing/SiteApp.py
+  persistenceMount: /data
+  containerPort: 5000

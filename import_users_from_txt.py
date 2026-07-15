@@ -143,6 +143,9 @@ async def run(
             for line in f:
                 parsed = parse_user_line(line)
                 if parsed is None:
+                    raw = line.strip()
+                    if raw and not raw.startswith("User_ID"):
+                        invalid_rows += 1
                     continue
 
                 total_rows += 1

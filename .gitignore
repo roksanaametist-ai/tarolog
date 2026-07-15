@@ -13,6 +13,11 @@ payment_nurture.json
 logs.json
 chat_data.json
 user_agreements.json
+used_promocodes.json
 
 # Секреты и переменные окружения
 .env
+
+# Лиды с лендинга
+landing/leads.json
+leads.json

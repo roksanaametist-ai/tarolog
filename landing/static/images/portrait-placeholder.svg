@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 320" fill="none">
+  <rect width="280" height="320" rx="12" fill="#1a1528"/>
+  <ellipse cx="140" cy="120" rx="55" ry="65" fill="#2d2640" stroke="#7df9ff" stroke-width="1" opacity="0.5"/>
+  <path d="M70 280 Q140 220 210 280" stroke="#ff6ec7" stroke-width="2" fill="none" opacity="0.4"/>
+  <text x="140" y="300" text-anchor="middle" fill="#8a7a9a" font-family="sans-serif" font-size="11">0H ?>@B@5B</text>
+</svg>

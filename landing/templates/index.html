@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Follow the Frensy — персональный эзотерический ассистент, консультации и обучение">
+    <title>Follow the Frensy</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+</head>
+<body>
+    <canvas id="particles" aria-hidden="true"></canvas>
+
+    <div class="cosmos">
+        <div class="layer layer-stars"></div>
+        <div class="layer layer-nebula"></div>
+        <div class="layer layer-ocean"></div>
+        <div class="layer layer-fog"></div>
+    </div>
+
+    <!-- Основной цикл -->
+    <div id="portal" class="portal">
+        <header class="hero section" id="hero">
+            <div class="hero-art" aria-hidden="true">
+                <div class="shell-logo">
+                    <svg viewBox="0 0 120 120" class="shell-svg">
+                        <ellipse cx="60" cy="65" rx="42" ry="38" fill="url(#shellGrad)" opacity="0.9"/>
+                        <path d="M30 70 Q60 20 90 70 Q60 95 30 70" fill="none" stroke="#e8d5b7" stroke-width="1.5" opacity="0.6"/>
+                        <defs>
+                            <radialGradient id="shellGrad">
+                                <stop offset="0%" stop-color="#ffd4a8"/>
+                                <stop offset="100%" stop-color="#8b5a6b"/>
+                            </radialGradient>
+                        </defs>
+                    </svg>
+                </div>
+                <div class="astronaut-float">
+                    <svg viewBox="0 0 80 100" class="astro-svg">
+                        <circle cx="40" cy="28" r="18" fill="#c8d4e8"/>
+                        <rect x="22" y="44" width="36" height="40" rx="8" fill="#9eb4d4"/>
+                        <rect x="10" y="50" width="14" height="8" rx="4" fill="#7a92b0"/>
+                        <rect x="56" y="50" width="14" height="8" rx="4" fill="#7a92b0"/>
+                        <rect x="30" y="82" width="10" height="14" rx="3" fill="#6a8098"/>
+                        <rect x="40" y="82" width="10" height="14" rx="3" fill="#6a8098"/>
+                    </svg>
+                </div>
+                <div class="angel angel-left">✦</div>
+                <div class="angel angel-right">✧</div>
+                <div class="graffiti-tag graffiti-1">FRENSY</div>
+                <div class="graffiti-tag graffiti-2">∞</div>
+            </div>
+
+            <div class="hero-content reveal">
+                <p class="eyebrow graffiti-stroke">Follow the Frensy</p>
+                <h1 class="hero-title">FOLLOW THE FRENSY</h1>
+                <p class="hero-sub">
+                    Персональный эзотерический ассистент • личные консультации • обучение эзотерическим практикам
+                </p>
+                <a href="#lead" class="btn btn-primary cta-hero">Получить 5 бесплатных раскладов</a>
+            </div>
+            <div class="scroll-hint" aria-hidden="true">↓</div>
+        </header>
+
+        <section class="section pain" id="pain">
+            <div class="container reveal">
+                <h2 class="section-title graffiti-stroke">Когда всё запуталось</h2>
+                <ul class="pain-grid">
+                    <li><span class="pain-icon">♡</span> отношения</li>
+                    <li><span class="pain-icon">◇</span> деньги</li>
+                    <li><span class="pain-icon">△</span> работа</li>
+                    <li><span class="pain-icon">↻</span> повторяющиеся сценарии</li>
+                    <li class="pain-wide"><span class="pain-icon">?</span> отсутствие понимания пути</li>
+                </ul>
+            </div>
+        </section>
+
+        <section class="section about" id="about">
+            <div class="container about-grid reveal">
+                <div class="portrait-wrap">
+                    <div class="portrait-frame">
+                        <!-- Замените src на ваш рисунок: static/images/portrait.jpg -->
+                        <img src="{{ url_for('static', filename=portrait_path) }}"
+                             alt="Роксана — эзотерик" class="portrait-img" width="280" height="320">
+                    </div>
+                </div>
+                <div class="about-text">
+                    <h2 class="section-title">Обо мне</h2>
+                    <p>
+                        Я провожу личные консультации на стыке нескольких систем — не как набор разрозненных техник,
+                        а как единый язык понимания вашей ситуации.
+                    </p>
+                    <p class="about-systems">
+                        <strong>Таро</strong> · <strong>Астрология</strong> · <strong>Human Design</strong> ·
+                        <strong>Йога</strong> · <strong>Сталкинг</strong>
+                    </p>
+                    <p>
+                        Мой подход — глубина без пафоса: честный разбор, опора на символы и практику,
+                        уважение к вашему темпу и границам.
+                    </p>
+                    <div class="reviews">
+                        <blockquote>
+                            «После сессии стало ясно, где я застреваю — и что делать первым шагом.»
+                        </blockquote>
+                        <blockquote>
+                            «Не шаблонные ответы, а живой диалог. Чувствуется опыт и внимание.»
+                        </blockquote>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="section services" id="services">
+            <div class="container reveal">
+                <h2 class="section-title">Услуги</h2>
+                <div class="service-cards">
+                    <article class="service-card">
+                        <div class="service-glow"></div>
+                        <h3>Личные консультации</h3>
+                        <p>Индивидуальный разбор ситуации: отношения, деньги, путь, скрытые сценарии.</p>
+                        <a href="{{ consultation_url }}" target="_blank" rel="noopener" class="btn btn-ghost">Записаться</a>
+                    </article>
+                    <article class="service-card">
+                        <div class="service-glow"></div>
+                        <h3>Школа эзотерических искусств</h3>
+                        <p>Обучение практикам: таро, астрология, телесные и созерцательные подходы.</p>
+                        <a href="{{ school_url }}" target="_blank" rel="noopener" class="btn btn-ghost">Узнать больше</a>
+                    </article>
+                    <article class="service-card service-card--bot">
+                        <div class="service-glow"></div>
+                        <h3>Бот-таролог</h3>
+                        <p>5 бесплатных раскладов: любовь, деньги, ситуация, скрытое, прогноз.</p>
+                        <a href="#lead" class="btn btn-primary">В бота</a>
+                    </article>
+                </div>
+            </div>
+        </section>
+
+        <section class="section lead" id="lead">
+            <div class="container reveal">
+                <h2 class="section-title">Оставьте контакты</h2>
+                <p class="lead-desc">
+                    Получите <strong>5 бесплатных раскладов</strong> в боте-тарологе:
+                    любовь · деньги · ситуация · скрытое · прогноз
+                </p>
+                <form id="lead-form" class="lead-form" novalidate>
+                    <label class="field">
+                        <span>Имя</span>
+                        <input type="text" name="name" required minlength="2" maxlength="80" placeholder="Как к вам обращаться">
+                    </label>
+                    <label class="field">
+                        <span>Telegram / WhatsApp / телефон</span>
+                        <input type="text" name="contact" required minlength="3" maxlength="120" placeholder="@username или +7...">
+                    </label>
+                    <p class="field-hint">Приоритет — Telegram</p>
+                    <button type="submit" class="btn btn-primary btn-wide">Получить 5 бесплатных раскладов</button>
+                    <p id="form-error" class="form-error" hidden></p>
+                </form>
+            </div>
+        </section>
+
+        <section class="section social-inline" id="social-main">
+            <div class="container reveal">
+                <h2 class="section-title">Оставайся в поле</h2>
+                <nav class="social-links" aria-label="Соцсети">
+                    {% for key, label, url in social_links %}
+                    <a href="{{ url }}" target="_blank" rel="noopener" class="social-pill">{{ label }}</a>
+                    {% else %}
+                    <a href="{{ bot_url }}" target="_blank" rel="noopener" class="social-pill">Telegram</a>
+                    {% endfor %}
+                </nav>
+            </div>
+        </section>
+
+        <footer class="footer">
+            <p>© Follow the Frensy</p>
+        </footer>
+    </div>
+
+    <!-- Слой после «сжигания» -->
+    <div id="after-burn" class="after-burn" hidden>
+        <div class="after-inner">
+            <p class="burn-quote">«После прочтения — сжечь»</p>
+            <h2 class="section-title">Оставайся в поле...</h2>
+            <nav class="social-links social-links--large" aria-label="Соцсети после перехода">
+                {% for key, label, url in social_links %}
+                <a href="{{ url }}" target="_blank" rel="noopener" class="social-pill">{{ label }}</a>
+                {% else %}
+                <a href="{{ bot_url }}" target="_blank" rel="noopener" class="social-pill">Telegram</a>
+                {% endfor %}
+            </nav>
+            <a href="{{ bot_url }}" target="_blank" rel="noopener" class="btn btn-primary" id="bot-link-after">Открыть бота-таролога</a>
+            <button type="button" class="btn btn-rebirth" id="btn-rebirth">Перерождение</button>
+        </div>
+    </div>
+
+    <!-- Оверлей сжигания -->
+    <div id="burn-overlay" class="burn-overlay" hidden aria-hidden="true">
+        <div class="parchment"></div>
+        <div class="flames"></div>
+        <p class="burn-text">После прочтения — сжечь</p>
+    </div>
+
+    <script>
+        window.FRENSY_CONFIG = {
+            botUrl: {{ bot_url | tojson }}
+        };
+    </script>
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
