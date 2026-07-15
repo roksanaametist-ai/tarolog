@@ -20,14 +20,12 @@ cd "путь\к\TarGPT3"
 | Данные бота | `BOT_DATA_DIR` или корень проекта | JSON с пользователями |
 | Секреты | `.env` | Токены (не коммитить!) |
 
-## Деплой на Amvera
+## Деплой
 
-**Бот** — корень репозитория, `amvera.yml` → `main.py`  
-Переменные в панели Amvera: `TELEGRAM_TOKEN`, `GROQ_API_KEY`, `YOOKASSA_*`, …  
-Данные сохраняются в `/data` (`BOT_DATA_DIR` по умолчанию `/data`).
+**Продакшен (HSHP VPS, `followthefrensy.ru`):** см. `DEPLOY-HSHP.md`  
+Бот — systemd, лендинг — Gunicorn + nginx. WebApp `/cards` и `/yesno` уже на сервере.
 
-**Лендинг** — папка `landing/`, свой `amvera.yml` → `SiteApp.py`  
-Переменные: `LANDING_BOT_URL`, `SOCIAL_*`, `LANDING_DATA_DIR=/data`
+**Альтернатива (Amvera):** см. `DEPLOY-AMVERA.md` — два облачных проекта, если VPS не используете.
 
 ## Связка сайт → бот
 

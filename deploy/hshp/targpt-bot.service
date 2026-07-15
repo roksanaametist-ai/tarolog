@@ -1,0 +1,18 @@
+[Unit]
+Description=Follow the Frensy Telegram bot (aiogram polling)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=targpt
+Group=targpt
+WorkingDirectory=/opt/targpt
+EnvironmentFile=/opt/targpt/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/targpt/venv/bin/python main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+[Unit]
+Description=Follow the Frensy landing (Flask + Gunicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=targpt
+Group=targpt
+WorkingDirectory=/opt/targpt
+EnvironmentFile=/opt/targpt/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=LANDING_DATA_DIR=/opt/targpt/data
+ExecStart=/opt/targpt/venv/bin/gunicorn --chdir landing --bind 127.0.0.1:5000 --workers 2 SiteApp:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
