@@ -250,6 +250,106 @@ class UserData:
         new_end = datetime.now() + timedelta(days=days)
         self.set_subscription_end(chat_id, new_end.strftime('%Y-%m-%d %H:%M:%S'))
 
+    def _ensure_user(self, chat_id: int) -> dict:
+        key = str(chat_id)
+        if key not in self.data:
+            self.add_user(chat_id)
+        return self.data[key]
+
+    def enable_auto_renew(
+        self,
+        chat_id: int,
+        *,
+        payment_method_id: str,
+        plan_key: str,
+        price_kopecks: int,
+    ) -> None:
+        u = self._ensure_user(chat_id)
+        u["yookassa_payment_method_id"] = payment_method_id
+        u["subscription_plan_key"] = plan_key
+        u["subscription_price"] = int(price_kopecks)
+        u["auto_renew"] = True
+        u["renew_fail_count"] = 0
+        u["next_renew_at"] = None
+        self.save_data()
+
+    def disable_auto_renew(self, chat_id: int) -> bool:
+        """Выключает автопродление. method_id оставляем на месте. Возвращает True, если было включено."""
+        key = str(chat_id)
+        if key not in self.data:
+            return False
+        was = bool(self.data[key].get("auto_renew"))
+        self.data[key]["auto_renew"] = False
+        self.data[key]["next_renew_at"] = None
+        self.data[key]["renew_fail_count"] = 0
+        self.save_data()
+        return was
+
+    def is_auto_renew_enabled(self, chat_id: int) -> bool:
+        return bool(self.data.get(str(chat_id), {}).get("auto_renew"))
+
+    def get_payment_method_id(self, chat_id: int) -> Optional[str]:
+        val = self.data.get(str(chat_id), {}).get("yookassa_payment_method_id")
+        return str(val) if val else None
+
+    def get_subscription_plan_key(self, chat_id: int) -> Optional[str]:
+        return self.data.get(str(chat_id), {}).get("subscription_plan_key")
+
+    def get_subscription_price(self, chat_id: int) -> Optional[int]:
+        val = self.data.get(str(chat_id), {}).get("subscription_price")
+        try:
+            return int(val) if val is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def set_renew_failure(self, chat_id: int, *, fail_count: int, next_renew_at: Optional[datetime]) -> None:
+        u = self._ensure_user(chat_id)
+        u["renew_fail_count"] = int(fail_count)
+        u["next_renew_at"] = (
+            next_renew_at.strftime("%Y-%m-%d %H:%M:%S") if next_renew_at else None
+        )
+        if fail_count >= 3:
+            u["auto_renew"] = False
+        self.save_data()
+
+    def clear_renew_failure(self, chat_id: int) -> None:
+        u = self._ensure_user(chat_id)
+        u["renew_fail_count"] = 0
+        u["next_renew_at"] = None
+        self.save_data()
+
+    def iter_users_due_renewal(self, now: Optional[datetime] = None) -> List[int]:
+        """Пользователи с auto_renew, у которых пора списывать (≤1 день до конца или next_renew_at)."""
+        now = now or datetime.now()
+        due: List[int] = []
+        for key, u in self.data.items():
+            if not u.get("auto_renew"):
+                continue
+            if not u.get("yookassa_payment_method_id"):
+                continue
+            price = u.get("subscription_price")
+            plan = u.get("subscription_plan_key")
+            if not price or not plan:
+                continue
+            next_raw = u.get("next_renew_at")
+            if next_raw:
+                try:
+                    if datetime.strptime(next_raw, "%Y-%m-%d %H:%M:%S") <= now:
+                        due.append(int(key))
+                    continue
+                except ValueError:
+                    pass
+            end_raw = u.get("subscription_end")
+            if not end_raw:
+                continue
+            try:
+                end = datetime.strptime(end_raw, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+            if end <= now + timedelta(days=1):
+                due.append(int(key))
+        return due
+
     def set_user_email(self, chat_id: int, email: str) -> None:
         if not self.is_valid_email(email):
             raise ValueError("Некорректный email адрес.")
@@ -397,6 +497,29 @@ PLAN_LABELS = {
     "sub_7d_399": "Месяц безлимит — 359 ₽",
     "sub_14d_499": "3 месяца безлимит — 999 ₽",
     "sub_30d_699": "Год безлимит — 2999 ₽",
+}
+
+# Безлимитные тарифы с автопродлением (не пакет вопросов)
+RECURRING_PLAN_KEYS = frozenset({"sub_7d_399", "sub_14d_499", "sub_30d_699"})
+
+PLAN_PRICE_KOPECKS = {
+    "sub_10_169": 16900,
+    "sub_7d_399": 35900,
+    "sub_14d_499": 99900,
+    "sub_30d_699": 299900,
+}
+
+PLAN_DAYS = {
+    "sub_7d_399": 31,
+    "sub_14d_499": 93,
+    "sub_30d_699": 365,
+}
+
+PRICE_TO_PLAN_KEY = {
+    16900: "sub_10_169",
+    35900: "sub_7d_399",
+    99900: "sub_14d_499",
+    299900: "sub_30d_699",
 }
 
 REFERRAL_HINT = (
@@ -564,6 +687,68 @@ async def apply_subscription_payment(chat_id: int, selected_price: int) -> bool:
     return True
 
 
+def _payment_method_saved_id(zakaz) -> Optional[str]:
+    """Достаёт payment_method.id, если способ сохранён для автоплатежей."""
+    try:
+        pm = getattr(zakaz, "payment_method", None)
+        if pm is None:
+            return None
+        saved = getattr(pm, "saved", False)
+        pmid = getattr(pm, "id", None)
+        if saved and pmid:
+            return str(pmid)
+    except Exception:
+        return None
+    return None
+
+
+async def activate_payment_success(
+    chat_id: int,
+    selected_price: int,
+    zakaz,
+    *,
+    plan_key: Optional[str] = None,
+) -> bool:
+    """Выдаёт покупку и при возможности включает автопродление."""
+    payment_id = str(getattr(zakaz, "id", "") or "")
+    u = user_data._ensure_user(chat_id)
+    if payment_id and u.get("last_yookassa_payment_id") == payment_id:
+        return True  # уже обработан (check_payment + nurture)
+
+    if not await apply_subscription_payment(chat_id, int(selected_price)):
+        return False
+
+    if payment_id:
+        u["last_yookassa_payment_id"] = payment_id
+        user_data.save_data()
+
+    plan_key = plan_key or PRICE_TO_PLAN_KEY.get(int(selected_price))
+    if plan_key in RECURRING_PLAN_KEYS:
+        pmid = _payment_method_saved_id(zakaz)
+        if pmid:
+            user_data.enable_auto_renew(
+                chat_id,
+                payment_method_id=pmid,
+                plan_key=plan_key,
+                price_kopecks=int(selected_price),
+            )
+            return True
+        logging.warning(
+            "Recurring plan paid but payment_method not saved for chat_id=%s", chat_id
+        )
+    return True
+
+
+def auto_renew_status_line(chat_id: int) -> str:
+    if user_data.is_auto_renew_enabled(chat_id):
+        plan = user_data.get_subscription_plan_key(chat_id)
+        label = PLAN_LABELS.get(plan or "", "подписка")
+        return f"Автопродление: включено ({label})"
+    if user_data.get_payment_method_id(chat_id):
+        return "Автопродление: выключено"
+    return "Автопродление: не подключено"
+
+
 async def send_referral_info(chat_id: int) -> None:
     me = await bot.get_me()
     link = f"https://t.me/{me.username}?start=ref_{chat_id}"
@@ -601,7 +786,7 @@ async def send_nurture_intent(chat_id: int, step: int) -> None:
     ]
     if step >= len(texts):
         return
-    await bot.send_message(chat_id, texts[step], reply_markup=sub())
+    await bot.send_message(chat_id, texts[step], reply_markup=sub(chat_id))
 
 
 async def send_nurture_checkout(chat_id: int, rec: dict, step: int) -> None:
@@ -643,16 +828,27 @@ async def send_nurture_checkout(chat_id: int, rec: dict, step: int) -> None:
 async def try_complete_pending_payment(chat_id: int, rec: dict) -> bool:
     payment_id = rec.get("payment_id")
     selected_price = rec.get("selected_price")
+    plan_key = rec.get("plan_key")
     if not payment_id or not selected_price:
         return False
     try:
         configure_yookassa()
         zakaz = Payment.find_one(payment_id)
         if zakaz.status == "succeeded":
-            await apply_subscription_payment(chat_id, int(selected_price))
+            await activate_payment_success(
+                chat_id, int(selected_price), zakaz, plan_key=plan_key
+            )
+            renew_note = ""
+            if plan_key in RECURRING_PLAN_KEYS and user_data.is_auto_renew_enabled(chat_id):
+                renew_note = (
+                    "\n\nАвтопродление включено: перед окончанием периода сумма "
+                    "спишется снова. Отменить можно в меню «💳 Оформить подписку»."
+                )
             await bot.send_message(
                 chat_id,
-                "Оплата прошла успешно! Вам выдана подписка 🎉" + REFERRAL_HINT,
+                "Оплата прошла успешно! Вам выдана подписка 🎉"
+                + renew_note
+                + REFERRAL_HINT,
                 reply_markup=main_kb(chat_id),
             )
             return True
@@ -710,6 +906,130 @@ async def payment_nurture_loop():
         await asyncio.sleep(600)
 
 
+async def charge_recurring_subscription(chat_id: int) -> bool:
+    """Безакцептное списание по сохранённому способу оплаты. True = успех."""
+    pmid = user_data.get_payment_method_id(chat_id)
+    plan_key = user_data.get_subscription_plan_key(chat_id)
+    price = user_data.get_subscription_price(chat_id)
+    email = user_data.get_user_email(chat_id)
+    if not pmid or not plan_key or not price or plan_key not in RECURRING_PLAN_KEYS:
+        return False
+    if not email:
+        logging.warning("Recurring charge skipped: no email for chat_id=%s", chat_id)
+        return False
+
+    configure_yookassa()
+    amount_value = f"{int(price / 100)}.00"
+    order_manager.increment_order_number()
+    idempotence_key = str(uuid.uuid4())
+    payment = Payment.create(
+        {
+            "amount": {"value": amount_value, "currency": "RUB"},
+            "capture": True,
+            "payment_method_id": pmid,
+            "description": f"Автопродление: {PLAN_LABELS.get(plan_key, 'подписка')}",
+            "metadata": {
+                "order_id": f"{order_manager.get_order_number()}",
+                "chat_id": str(chat_id),
+                "plan_key": plan_key,
+                "selected_price": str(price),
+                "recurring": "1",
+            },
+            "receipt": {
+                "customer": {"email": email},
+                "items": [
+                    {
+                        "description": PLAN_LABELS.get(plan_key, "Подписка")[:128],
+                        "quantity": 1,
+                        "amount": {"value": amount_value, "currency": "RUB"},
+                        "vat_code": 1,
+                    }
+                ],
+            },
+        },
+        idempotence_key,
+    )
+
+    # Ждём финальный статус (обычно succeeds сразу для автоплатежа)
+    for _ in range(12):
+        zakaz = Payment.find_one(payment.id)
+        if zakaz.status == "succeeded":
+            days = PLAN_DAYS.get(plan_key, 31)
+            user_data.extend_subscription(chat_id, days=days)
+            update_payment_data(price, {31: "31d", 93: "93d", 365: "365d"}.get(days, "31d"))
+            user_data.clear_renew_failure(chat_id)
+            end = user_data.get_subscription_end(chat_id)
+            end_s = end.strftime("%d.%m.%Y") if end else "—"
+            try:
+                await bot.send_message(
+                    chat_id,
+                    f"Автопродление прошло успешно ✨\n"
+                    f"Тариф: {PLAN_LABELS.get(plan_key)}\n"
+                    f"Подписка продлена до {end_s}.",
+                    reply_markup=main_kb(chat_id),
+                )
+            except Exception:
+                pass
+            return True
+        if zakaz.status in ("canceled", "failed"):
+            return False
+        await asyncio.sleep(5)
+    return False
+
+
+async def handle_recurring_failure(chat_id: int) -> None:
+    u = user_data.data.get(str(chat_id), {})
+    fail_count = int(u.get("renew_fail_count", 0)) + 1
+    if fail_count == 1:
+        next_at = datetime.now() + timedelta(hours=12)
+    elif fail_count == 2:
+        next_at = datetime.now() + timedelta(hours=24)
+    else:
+        next_at = None
+    user_data.set_renew_failure(chat_id, fail_count=fail_count, next_renew_at=next_at)
+
+    if fail_count >= 3:
+        text = (
+            "Не удалось списать оплату за автопродление (3 попытки).\n"
+            "Автопродление выключено. Оформите подписку снова через «💳 Оформить подписку»."
+        )
+    else:
+        text = (
+            f"Не удалось списать оплату за автопродление (попытка {fail_count}/3).\n"
+            "Проверьте карту или баланс. Следующая попытка будет автоматически.\n"
+            "Отменить автопродление: «💳 Оформить подписку» → «Отменить автопродление»."
+        )
+    try:
+        await bot.send_message(chat_id, text, reply_markup=main_kb(chat_id))
+    except Exception:
+        pass
+
+
+async def recurring_billing_loop():
+    """Фоновое автопродление безлимитных подписок через сохранённый payment_method."""
+    await asyncio.sleep(90)
+    while True:
+        try:
+            due_ids = user_data.iter_users_due_renewal()
+            for chat_id in due_ids:
+                if not user_data.is_auto_renew_enabled(chat_id):
+                    continue
+                try:
+                    ok = await charge_recurring_subscription(chat_id)
+                    if not ok:
+                        await handle_recurring_failure(chat_id)
+                except Exception as e:
+                    logging.warning("Recurring charge error chat_id=%s: %s", chat_id, e)
+                    try:
+                        await handle_recurring_failure(chat_id)
+                    except Exception:
+                        pass
+                await asyncio.sleep(1)
+        except Exception as e:
+            logging.warning("recurring_billing_loop tick failed: %s", e)
+        await asyncio.sleep(3600)
+
+
 class StatusData:
     def __init__(self, filename: str = 'status_data.json'):
         self.filename = filename
@@ -762,9 +1082,19 @@ class PhotoSender:
                     chat_id, caption, parse_mode=parse_mode, reply_markup=reply_markup
                 )
             return
+        # Telegram hard-limit ~1024 for caption — truncate to avoid silent photo-only delivery
+        safe_caption = caption
+        if isinstance(safe_caption, str) and len(safe_caption) > 1000:
+            safe_caption = safe_caption[:997] + "…"
         try:
             photo = FSInputFile(photo_path)
-            await self.bot.send_photo(chat_id, photo=photo, caption=caption, parse_mode=parse_mode, reply_markup=reply_markup)
+            await self.bot.send_photo(
+                chat_id,
+                photo=photo,
+                caption=safe_caption,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup,
+            )
         except Exception as e:
             print(f"Ошибка отправки фото: {e}")
             if caption:
@@ -1175,6 +1505,60 @@ async def get_card_names(card_list):
 
 TAROT_MODEL = os.getenv("GROQ_TAROT_MODEL", "llama-3.3-70b-versatile").strip()
 
+TAROT_SYSTEM_PROMPT = (
+    "Ты опытный русскоязычный таролог-консультант Follow the Frensy. "
+    "Отвечай ТОЛЬКО на русском языке: без английских слов, без латиницы в обычном тексте "
+    "(исключение — имена людей, если пользователь написал их латиницей). "
+    "Главная цель — дать прямой, полезный ответ на КОНКРЕТНЫЙ вопрос пользователя через выпавшие карты. "
+    "Не уходи в сторону: не советуй покупки гаджетов, технику, бренды и чужие темы, "
+    "если их нет в вопросе. "
+    "Не пиши «я не понял вопрос», «переформулируйте», «insufficient» и подобное — "
+    "восприми формулировку максимально доброжелательно и ответь по сути. "
+    "Не путай карты: «Верховная Жрица» (аркан II) и «Иерофант» (аркан V) — разные карты; "
+    "используй только те названия, которые переданы в запросе. "
+    "Не давай словарные энциклопедии по картам: каждая фраза должна связывать смысл карты "
+    "с ситуацией из вопроса (отношения, решение, исход, совет по делу). "
+    "Итоговый ответ должен быть ясным и прикладным: что происходит и что делать. "
+    "Строго следуй формату ответа из запроса пользователя."
+)
+
+_TELEGRAM_CAPTION_LIMIT = 1000
+
+
+def clean_tarot_text(text: str) -> str:
+    """Убирает markdown, «кривой» мусор и явные английские вставки из ответа модели."""
+    if not isinstance(text, str):
+        return ""
+    t = text.strip()
+    if not t:
+        return ""
+    t = t.replace("\r\n", "\n").replace("\r", "\n")
+    t = re.sub(r"```(?:json|JSON)?", "", t)
+    t = t.replace("```", "")
+    t = re.sub(r"[*_`#>]{1,}", "", t)
+    t = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", t)
+    # Частые английские обрывки от модели
+    banned = (
+        r"\b(?:insufficient|undefined|null|NaN|error|TODO|as an AI|I cannot|"
+        r"I'm sorry|High Priestess|Hierophant|The Fool|The Magician|summary|"
+        r"card_interpretations|JSON|markdown)\b"
+    )
+    t = re.sub(banned, "", t, flags=re.IGNORECASE)
+    t = re.sub(r"[ \t]+\n", "\n", t)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    t = re.sub(r"[ \t]{2,}", " ", t)
+    return t.strip(" \n\t-–—|")
+
+
+def split_caption_and_body(card_label: str, interpretation: str, idx: int) -> tuple[str, str]:
+    """Короткий caption к фото + полный текст трактовки отдельным сообщением."""
+    title = f"Карта {idx}: {card_label}"
+    body = clean_tarot_text(interpretation)
+    # Telegram лимит caption ~1024; длинные трактовки всегда отдельным сообщением
+    if body and len(title) + len(body) + 4 <= _TELEGRAM_CAPTION_LIMIT:
+        return f"{title}\n\n{body}", ""
+    return title, body
+
 
 async def get_tarot_reading(user_message: str) -> str:
     last_err = None
@@ -1182,18 +1566,11 @@ async def get_tarot_reading(user_message: str) -> str:
         try:
             response = client.chat.completions.create(
                 model=TAROT_MODEL,
-                temperature=0.4,
+                temperature=0.25,
+                max_tokens=1800,
+                timeout=45.0,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "Ты опытный таролог-консультант. Пишешь только по-русски. "
-                            "Главная цель — ответить на КОНКРЕТНЫЙ вопрос пользователя через выпавшие карты. "
-                            "Не давай общие словарные значения карт сами по себе: каждая фраза должна "
-                            "связывать значение карты с ситуацией из вопроса (люди, чувства, решение, исход). "
-                            "Строго следуй формату ответа из запроса пользователя."
-                        ),
-                    },
+                    {"role": "system", "content": TAROT_SYSTEM_PROMPT},
                     {"role": "user", "content": user_message},
                 ],
             )
@@ -1205,7 +1582,7 @@ async def get_tarot_reading(user_message: str) -> str:
             last_err = e
             logging.warning("Groq tarot attempt %s failed: %s", attempt + 1, e)
 
-        await asyncio.sleep(1 + attempt)
+        await asyncio.sleep(0.4 + attempt * 0.4)
 
     raise RuntimeError(f"Groq request failed after retries: {last_err}")
 
@@ -1246,7 +1623,7 @@ async def get_tarot_reading_structured(
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        strict_line = "- Не допускаются пустые трактовки.\n" if strict else ""
+        strict_line = "- Не допускаются пустые трактовки и общие отписки.\n" if strict else ""
         role_line = (
             "- Учитывай роль карты в раскладе (чувства/мысли/действия и т.п.), "
             "но всё равно отвечай в контексте вопроса пользователя.\n"
@@ -1255,7 +1632,7 @@ async def get_tarot_reading_structured(
         )
         return (
             f"ВОПРОС ПОЛЬЗОВАТЕЛЯ (это главное — ответь именно на него):\n«{question}»\n\n"
-            f"Выпавшие карты (по порядку):\n"
+            f"Выпавшие карты (по порядку, используй ТОЧНО эти названия):\n"
             + "\n".join(lines)
             + "\n\n"
             + "Ответь СТРОГО одним JSON-объектом без Markdown и без текста вокруг.\n"
@@ -1265,11 +1642,14 @@ async def get_tarot_reading_structured(
             + "1) Каждая трактовка ОБЯЗАНА отвечать на вопрос пользователя через смысл карты.\n"
             + "2) Запрещены абстрактные описания «карта означает перемены/баланс» без связи с вопросом.\n"
             + "3) В каждой трактовке хотя бы раз явно опирайся на тему вопроса "
-            + "(имена/отношения/решение/срок — как в вопросе).\n"
+            + "(имена/отношения/решение/срок/совет — как в вопросе).\n"
             + f"4) Дай РОВНО {expected_n} трактовок, строго по порядку карт.\n"
-            + "5) summary — краткий прямой ответ на вопрос пользователя с учётом всех карт.\n"
+            + "5) summary — краткий прямой ответ на вопрос: вывод + что делать дальше.\n"
             + "6) Не перечисляй названия карт списком, не добавляй лишние поля JSON.\n"
-            + "7) Пиши по-русски, 2–5 предложений на трактовку.\n"
+            + "7) Пиши только по-русски, 2–5 предложений на трактовку. Без английских слов.\n"
+            + "8) Не предлагай товары/гаджеты/покупки вне темы вопроса.\n"
+            + "9) Не проси переформулировать вопрос и не пиши, что «не понял».\n"
+            + "10) Не путай «Иерофант» и «Верховная Жрица» — это разные карты.\n"
             + role_line
             + strict_line
         )
@@ -1317,14 +1697,14 @@ async def get_tarot_reading_structured(
 
     if not isinstance(ci, list):
         ci = []
-    ci = [(x.strip() if isinstance(x, str) else "") for x in ci]
+    ci = [clean_tarot_text(x) if isinstance(x, str) else "" for x in ci]
     while len(ci) < expected_n:
         ci.append("")
     if len(ci) > expected_n:
         ci = ci[:expected_n]
     if not isinstance(summary, str):
         summary = ""
-    return {"card_interpretations": ci, "summary": summary.strip()}
+    return {"card_interpretations": ci, "summary": clean_tarot_text(summary)}
 
 
 def structured_is_complete(structured: dict, expected_n: int) -> bool:
@@ -1357,13 +1737,30 @@ def parse_comma_separated_cards(text: str) -> List[Dict[str, Any]]:
     """Парсит карты из ручного ввода; сопоставляет с колодой бота, если название совпало."""
     parts = [p.strip() for p in text.split(",") if p.strip()]
     name_to_path = _tarot_name_to_path()
+    aliases = {
+        "жрец": "иерофант",
+        "папа": "иерофант",
+        "верховный жрец": "иерофант",
+        "hierophant": "иерофант",
+        "жрица": "верховная жрица",
+        "жрица таро": "верховная жрица",
+        "high priestess": "верховная жрица",
+        "priestess": "верховная жрица",
+    }
     cards: List[Dict[str, Any]] = []
     for part in parts:
-        key = part.lower()
+        key = part.lower().strip()
+        key = aliases.get(key, key)
         path = name_to_path.get(key)
         if not path:
+            # Точное/префиксное совпадение важнее «жрец» ⊂ «жрица»
             for name_key, card_path in name_to_path.items():
-                if key in name_key or name_key in key:
+                if key == name_key or name_key.startswith(key) or key.startswith(name_key):
+                    path = card_path
+                    break
+        if not path:
+            for name_key, card_path in name_to_path.items():
+                if len(key) >= 4 and (key in name_key or name_key in key):
                     path = card_path
                     break
         label = tarot_cards.get(path, part) if path else part
@@ -1398,7 +1795,7 @@ async def fetch_structured_reading(
                 break
         except Exception:
             pass
-        await asyncio.sleep(1 + attempt)
+        await asyncio.sleep(0.35 + attempt * 0.35)
     if not structured:
         structured = {"card_interpretations": [], "summary": ""}
     return structured
@@ -1424,38 +1821,56 @@ async def deliver_structured_spread(
     question_text = (question_text or "").strip()
     if not question_text:
         logging.warning("deliver_structured_spread: empty question for chat_id=%s", chat_id)
+        question_text = "Что важно понять в моей текущей ситуации и какой следующий шаг?"
+
+    wait_msg = await bot.send_message(chat_id, "Происходит магия… Готовлю трактовку.")
 
     prompt = question_text
     if yes_no_mode:
         prompt += (
             "\n\nВажно: в поле summary сначала напиши однозначный ответ «Да» или «Нет» "
-            "именно на вопрос пользователя, затем краткое пояснение по карте."
+            "именно на вопрос пользователя, затем краткое пояснение по карте. "
+            "Не пиши, что вопрос непонятен."
         )
 
     card_labels = [c["label"] for c in cards]
     structured = await fetch_structured_reading(prompt, card_labels, card_roles)
 
     reading_ok = structured_is_complete(structured, expected_n)
+    if not reading_ok:
+        # Ещё одна жёсткая попытка до отправки фото — чтобы не показывать карты «пустыми».
+        try:
+            structured = await get_tarot_reading_structured(
+                prompt + "\n\nПОВТОР: верни полный JSON со всеми трактовками и summary.",
+                card_labels,
+                card_roles_in_order=card_roles,
+            )
+            reading_ok = structured_is_complete(structured, expected_n)
+        except Exception as e:
+            logging.warning("Extra structured retry failed: %s", e)
+
     if decrement_balance and reading_ok and _should_decrement_questions(chat_id):
         user_data.decrement_user_questions(chat_id)
 
     per_card_paragraphs = structured.get("card_interpretations") or []
     while len(per_card_paragraphs) < expected_n:
         per_card_paragraphs.append("")
-    q_hint = question_text or "вашу ситуацию"
+    q_hint = question_text
     for idx in range(expected_n):
         raw = per_card_paragraphs[idx] if idx < len(per_card_paragraphs) else ""
-        if not (isinstance(raw, str) and raw.strip()):
+        raw = clean_tarot_text(raw) if isinstance(raw, str) else ""
+        if not raw:
             role = ""
             if card_roles and idx < len(card_roles) and card_roles[idx]:
                 role = f" ({card_roles[idx]})"
-            per_card_paragraphs[idx] = (
-                f"Карта «{cards[idx]['label']}»{role} по вопросу «{q_hint}»: "
-                f"сейчас энергия этой карты указывает на важные нюансы вашей ситуации. "
-                f"Повторите расклад ещё раз, если нужен более подробный ответ."
+            raw = (
+                f"Карта «{cards[idx]['label']}»{role} по вопросу «{q_hint}» "
+                f"указывает на ключевой нюанс вашей ситуации. "
+                f"Смотрите на итоговый ответ ниже — там собран вывод по всем картам."
             )
+        per_card_paragraphs[idx] = raw
 
-    summary_paragraph = (structured.get("summary") or "").strip()
+    summary_paragraph = clean_tarot_text(structured.get("summary") or "")
     fallback_roles = role_labels_for_fallback or card_roles or []
     if expected_n > 1 and not summary_paragraph:
         summary_paragraph = (
@@ -1474,22 +1889,28 @@ async def deliver_structured_spread(
     if yes_no_mode and not summary_paragraph and per_card_paragraphs[0].strip():
         summary_paragraph = per_card_paragraphs[0].strip()
 
-    # Без Markdown: символы _ * [ ] из текста модели ломают отправку в Telegram
+    try:
+        await bot.delete_message(chat_id, wait_msg.message_id)
+    except Exception:
+        pass
+
+    # Без Markdown: символы из текста модели ломают отправку в Telegram
     if show_card_list_header and not compact_single_card:
         names_text_lines = [f"{idx + 1}. {c['label']}" for idx, c in enumerate(cards)]
-        header = "Перечисление выпавших карт:\n" + "\n".join(names_text_lines)
+        header = "Выпавшие карты:\n" + "\n".join(names_text_lines)
         await bot.send_message(chat_id, header)
 
     for idx, card in enumerate(cards):
-        interp = per_card_paragraphs[idx]
-        caption = f"Карта {idx + 1}: {card['label']}\n\n{interp}".strip()
+        caption, body = split_caption_and_body(card["label"], per_card_paragraphs[idx], idx + 1)
         card_path = card.get("path")
         if card_path:
             await photo_sender.send_photo(chat_id, card_path, caption=caption)
         else:
             await bot.send_message(chat_id, caption)
+        if body:
+            await bot.send_message(chat_id, body)
         if not compact_single_card:
-            await asyncio.sleep(3)
+            await asyncio.sleep(0.35)
 
     if yes_no_mode and summary_paragraph:
         await bot.send_message(chat_id, f"Ответ по раскладу:\n\n{summary_paragraph}")
@@ -1500,6 +1921,13 @@ async def deliver_structured_spread(
         )
     elif compact_single_card and summary_paragraph and not yes_no_mode:
         await bot.send_message(chat_id, summary_paragraph)
+
+    if not reading_ok:
+        await bot.send_message(
+            chat_id,
+            "Трактовка собрана с запасом: если ответ кажется слишком общим — "
+            "задайте вопрос чуть конкретнее (кто/что/когда) и повторите расклад.",
+        )
 
     finish_kb = InlineKeyboardBuilder()
     finish_kb.row(consultation_inline_button())
@@ -1771,10 +2199,8 @@ async def process_question(message: types.Message, state: FSMContext):
     manual_cards = parse_comma_separated_cards(message.text) if message.text else []
 
     if 3 <= len(manual_cards) <= 6:
-        msg = await bot.send_message(chat_id, "Происходит магия...")
         data_state = await state.get_data()
         question_text = data_state.get("question", "")
-        await bot.delete_message(chat_id, msg.message_id)
         await deliver_structured_spread(
             chat_id,
             question_text,
@@ -1784,10 +2210,8 @@ async def process_question(message: types.Message, state: FSMContext):
     elif message.web_app_data:
         data = json.loads(message.web_app_data.data)
         cards12 = data["cards"]
-        msg = await bot.send_message(chat_id, "Происходит магия...")
         data_state = await state.get_data()
         question_text = data_state.get("question", "")
-        await bot.delete_message(chat_id, msg.message_id)
         await deliver_structured_spread(
             chat_id,
             question_text,
@@ -1862,8 +2286,6 @@ async def process_question(message: types.Message, state: FSMContext):
         if len(manual_cards) != 1:
             await bot.send_message(chat_id, "Введите одну карту (или выберите через WebApp).")
             return
-        msg = await bot.send_message(chat_id, "Происходит магия...")
-        await bot.delete_message(chat_id, msg.message_id)
         await deliver_structured_spread(
             chat_id,
             question_text,
@@ -1876,8 +2298,6 @@ async def process_question(message: types.Message, state: FSMContext):
     elif message.web_app_data:
         data = json.loads(message.web_app_data.data)
         cards12 = data["cards"]
-        msg = await bot.send_message(chat_id, "Происходит магия...")
-        await bot.delete_message(chat_id, msg.message_id)
         await deliver_structured_spread(
             chat_id,
             question_text,
@@ -1932,11 +2352,9 @@ async def one_day_finish(call: CallbackQuery):
     logger.log_command(call.message.chat.id, call.message.text)
     chat_id = call.message.chat.id
     await call.message.delete()
-    msg = await bot.send_message(chat_id, "Происходит магия...")
     selected_card = one_card.select_random_card(chat_id)
     sel_card = f"static/card{selected_card}.jpg"
     carda = tarot_cards.get(sel_card, f"Карта {selected_card}")
-    await bot.delete_message(chat_id, msg.message_id)
     await deliver_structured_spread(
         chat_id,
         "Расклад «Карта дня». Опиши, как пройдёт сегодняшний день по выпавшей карте.",
@@ -2016,8 +2434,6 @@ async def process_question(message: types.Message, state: FSMContext):
     roles = ROMANTIC_CARD_ROLES[: len(manual_cards)]
 
     if len(manual_cards) == 3:
-        msg = await bot.send_message(chat_id, "Происходит магия...")
-        await bot.delete_message(chat_id, msg.message_id)
         await deliver_structured_spread(
             chat_id,
             ROMANTIC_SPREAD_QUESTION,
@@ -2029,8 +2445,6 @@ async def process_question(message: types.Message, state: FSMContext):
     elif message.web_app_data:
         data = json.loads(message.web_app_data.data)
         cards12 = data["cards"]
-        msg = await bot.send_message(chat_id, "Происходит магия...")
-        await bot.delete_message(chat_id, msg.message_id)
         await deliver_structured_spread(
             chat_id,
             ROMANTIC_SPREAD_QUESTION,
@@ -2111,8 +2525,6 @@ async def process_question(message: types.Message, state: FSMContext):
     manual_cards = parse_comma_separated_cards(message.text) if message.text else []
 
     if len(manual_cards) == 3:
-        msg = await bot.send_message(chat_id, "Происходит магия...")
-        await bot.delete_message(chat_id, msg.message_id)
         await deliver_structured_spread(
             chat_id,
             DANGEROUS_SPREAD_QUESTION,
@@ -2124,8 +2536,6 @@ async def process_question(message: types.Message, state: FSMContext):
     elif message.web_app_data:
         data = json.loads(message.web_app_data.data)
         cards12 = data["cards"]
-        msg = await bot.send_message(chat_id, "Происходит магия...")
-        await bot.delete_message(chat_id, msg.message_id)
         await deliver_structured_spread(
             chat_id,
             DANGEROUS_SPREAD_QUESTION,
@@ -2240,7 +2650,7 @@ async def my_balance(message: types.Message):
         status_line = "Подписка не активна."
 
     await message.answer(
-        f"Ваш баланс: {questions} вопросов.\n{status_line}",
+        f"Ваш баланс: {questions} вопросов.\n{status_line}\n{auto_renew_status_line(chat_id)}",
         reply_markup=back_kb(),
     )
 
@@ -2265,11 +2675,15 @@ async def oplata(message: Message, state: FSMContext):
     if not user_has_active_subscription(chat_id):
         payment_nurture.set_intent(chat_id)
     email = user_data.get_user_email(chat_id)
+    intro = (
+        "Выбери актуальную подписку для себя:\n\n"
+        "Безлимитные тарифы (месяц / 3 месяца / год) подключают автопродление: "
+        "карта сохранится в ЮKassa, перед окончанием периода сумма спишется снова. "
+        "Отменить автопродление можно кнопкой ниже."
+        + REFERRAL_HINT
+    )
     if email:
-        await message.answer(
-            "Выбери актуальную подписку для себя:" + REFERRAL_HINT,
-            reply_markup=sub(),
-        )
+        await message.answer(intro, reply_markup=sub(chat_id))
     else:
         await message.answer(
             "Для того чтобы оформить подписку необходимо ввести почту. "
@@ -2292,8 +2706,10 @@ async def email_box(message: Message, state: FSMContext):
         if not user_has_active_subscription(chat_id):
             payment_nurture.set_intent(chat_id)
         await message.answer(
-            "Email установлен. Выберите подписку." + REFERRAL_HINT,
-            reply_markup=sub(),
+            "Email установлен. Выберите подписку.\n\n"
+            "Безлимитные тарифы включают автопродление (карту можно отвязать в меню)."
+            + REFERRAL_HINT,
+            reply_markup=sub(chat_id),
         )
         await state.clear()
     except ValueError:
@@ -2305,19 +2721,24 @@ async def email_box(message: Message, state: FSMContext):
         )
 
 
-def sub():
+def sub(chat_id: Optional[int] = None):
     sub1 = types.InlineKeyboardButton(text='10 запросов - 169 руб.', callback_data="sub_10_169")
-    #sub2 = types.InlineKeyboardButton(text='30 запросов - 339 руб.', callback_data="sub_30_339")
-    sub3 = types.InlineKeyboardButton(text='Месяц (безлимит) - 359 руб.', callback_data="sub_7d_399") #меняю
+    sub3 = types.InlineKeyboardButton(text='Месяц (безлимит) - 359 руб.', callback_data="sub_7d_399")
     sub4 = types.InlineKeyboardButton(text='3 Месяца (безлимит) - 999 руб.', callback_data="sub_14d_499")
     sub5 = types.InlineKeyboardButton(text='Год (безлимит) - 2999 руб.', callback_data="sub_30d_699")
 
     markup = InlineKeyboardBuilder()
     markup.row(sub1)
-    #markup.row(sub2)
     markup.row(sub3)
     markup.row(sub4)
     markup.row(sub5)
+    if chat_id is not None and user_data.is_auto_renew_enabled(chat_id):
+        markup.row(
+            types.InlineKeyboardButton(
+                text="⏸ Отменить автопродление",
+                callback_data="cancel_auto_renew",
+            )
+        )
     markup.row(consultation_inline_button())
     markup.row(types.InlineKeyboardButton(text=BACK_BUTTON_TEXT, callback_data="back_to_main"))
 
@@ -2328,13 +2749,7 @@ async def submonth(call: CallbackQuery):
     logger.log_command(call.message.chat.id, call.message.text)
     message = call.message
     chat_id = message.chat.id
-    prices = {
-        "sub_10_169": 16900,
-        #"sub_30_339": 33900,
-        "sub_7d_399": 35900,
-        "sub_14d_499": 99900,
-        "sub_30d_699": 299900,
-    }
+    prices = PLAN_PRICE_KOPECKS
     selected_price = prices.get(call.data, 15000)
     plan_key = call.data
     await call.message.delete()
@@ -2358,10 +2773,11 @@ async def submonth(call: CallbackQuery):
 
     order_manager.increment_order_number()
 
-    idempotence_key = str(uuid.uuid4())
-    payment = Payment.create({
+    amount_value = f"{int(selected_price / 100)}.00"
+    save_method = plan_key in RECURRING_PLAN_KEYS
+    payment_payload = {
         "amount": {
-            "value": f"{int(selected_price / 100)}.00",
+            "value": amount_value,
             "currency": "RUB"
         },
         "capture": True,
@@ -2369,9 +2785,12 @@ async def submonth(call: CallbackQuery):
             "type": "redirect",
             "return_url": BOT_RETURN_URL
         },
-        "description": "Оплата подписки",
+        "description": PLAN_LABELS.get(plan_key, "Оплата подписки"),
         "metadata": {
-            "order_id": f"{order_manager.get_order_number()}"
+            "order_id": f"{order_manager.get_order_number()}",
+            "chat_id": str(chat_id),
+            "plan_key": plan_key,
+            "selected_price": str(selected_price),
         },
         "receipt": {
             "customer": {
@@ -2379,17 +2798,22 @@ async def submonth(call: CallbackQuery):
             },
             "items": [
                 {
-                    "description": "Подписка",
+                    "description": PLAN_LABELS.get(plan_key, "Подписка")[:128],
                     "quantity": 1,
                     "amount": {
-                        "value": f"{int(selected_price / 100)}.00",
+                        "value": amount_value,
                         "currency": "RUB"
                     },
                     "vat_code": 1
                 }
             ]
         }
-    }, idempotence_key)
+    }
+    if save_method:
+        payment_payload["save_payment_method"] = True
+
+    idempotence_key = str(uuid.uuid4())
+    payment = Payment.create(payment_payload, idempotence_key)
 
     confirmation_url = payment.confirmation.confirmation_url
     payment_id = payment.id
@@ -2402,6 +2826,13 @@ async def submonth(call: CallbackQuery):
         selected_price=selected_price,
     )
 
+    renew_hint = ""
+    if save_method:
+        renew_hint = (
+            "\n\nПосле оплаты карта сохранится для автопродления этого тарифа. "
+            "Отменить автопродление можно в меню «💳 Оформить подписку»."
+        )
+
     pay_kb = InlineKeyboardBuilder()
     pay_kb.row(types.InlineKeyboardButton(text="💳 Оплатить сейчас", url=confirmation_url))
     pay_kb.row(types.InlineKeyboardButton(text="👥 Пригласить друга (+5)", callback_data="nurture_referral"))
@@ -2412,12 +2843,39 @@ async def submonth(call: CallbackQuery):
         text=(
             f"Оплата: {PLAN_LABELS.get(plan_key, 'Подписка')}\n\n"
             + "Нажмите кнопку ниже — откроется безопасная страница YooKassa."
+            + renew_hint
             + REFERRAL_HINT
         ),
         reply_markup=pay_kb.as_markup(),
     )
 
-    asyncio.create_task(check_payment_status(payment_id, message.chat.id, selected_price))
+    asyncio.create_task(
+        check_payment_status(payment_id, message.chat.id, selected_price, plan_key=plan_key)
+    )
+
+
+@dp.callback_query(F.data == "cancel_auto_renew")
+async def cancel_auto_renew_cb(call: CallbackQuery):
+    await call.answer()
+    chat_id = call.message.chat.id
+    if not user_data.is_auto_renew_enabled(chat_id):
+        await call.message.answer(
+            "Автопродление уже выключено."
+            + ("\n" + auto_renew_status_line(chat_id)),
+            reply_markup=main_kb(chat_id),
+        )
+        return
+    user_data.disable_auto_renew(chat_id)
+    end = user_data.get_subscription_end(chat_id)
+    end_note = ""
+    if end and end > datetime.now():
+        end_note = f"\nТекущая подписка действует до {end.strftime('%d.%m.%Y %H:%M')}."
+    await call.message.answer(
+        "Автопродление отключено. Повторных списаний не будет."
+        + end_note
+        + "\nЧтобы снова включить — оплатите безлимитный тариф заново.",
+        reply_markup=main_kb(chat_id),
+    )
 
 
 @dp.callback_query(F.data == "nurture_pick_plan")
@@ -2426,12 +2884,14 @@ async def nurture_pick_plan(call: CallbackQuery):
     chat_id = call.message.chat.id
     if user_has_active_subscription(chat_id):
         await call.message.answer(
-            "У вас уже активна подписка ✨" + REFERRAL_HINT,
+            "У вас уже активна подписка ✨\n"
+            + auto_renew_status_line(chat_id)
+            + REFERRAL_HINT,
             reply_markup=main_kb(chat_id),
         )
         payment_nurture.mark_completed(chat_id)
         return
-    await call.message.answer("Выберите тариф:" + REFERRAL_HINT, reply_markup=sub())
+    await call.message.answer("Выберите тариф:" + REFERRAL_HINT, reply_markup=sub(chat_id))
 
 
 @dp.callback_query(F.data == "nurture_referral")
@@ -2440,16 +2900,31 @@ async def nurture_referral(call: CallbackQuery):
     await send_referral_info(call.message.chat.id)
 
 
-async def check_payment_status(payment_id, chat_id, selected_price):
+async def check_payment_status(payment_id, chat_id, selected_price, plan_key: Optional[str] = None):
     configure_yookassa()
     for _ in range(60):
         zakaz = Payment.find_one(payment_id)
 
         if zakaz.status == "succeeded":
-            if await apply_subscription_payment(chat_id, selected_price):
+            if await activate_payment_success(
+                chat_id, selected_price, zakaz, plan_key=plan_key
+            ):
+                renew_note = ""
+                if (plan_key in RECURRING_PLAN_KEYS) and user_data.is_auto_renew_enabled(chat_id):
+                    renew_note = (
+                        "\n\nАвтопродление включено: перед окончанием периода сумма "
+                        "спишется снова. Отменить — «💳 Оформить подписку» → "
+                        "«Отменить автопродление»."
+                    )
+                elif plan_key in RECURRING_PLAN_KEYS:
+                    renew_note = (
+                        "\n\nПодписка выдана. Автопродление не удалось включить "
+                        "(возможно, в ЮKassa не включены автоплатежи или способ оплаты "
+                        "не поддерживает сохранение)."
+                    )
                 await bot.send_message(
                     chat_id,
-                    "Вам выдана подписка!" + REFERRAL_HINT,
+                    "Вам выдана подписка!" + renew_note + REFERRAL_HINT,
                     reply_markup=main_kb(chat_id),
                 )
             return
@@ -3041,7 +3516,8 @@ async def check_sub(message: types.Message):
 
 async def main():
 
-    # Арканы (1-22)
+    # Старшие арканы (файлы card1…card22).
+    # card1=0 Дурак … card3=II Жрица … card6=V Иерофант (не путать с Жрицей).
     arcana_names = [
         "Дурак", "Маг", "Верховная Жрица", "Императрица", "Император", "Иерофант",
         "Влюбленные", "Колесница", "Сила", "Отшельник", "Колесо Фортуны",
@@ -3092,6 +3568,7 @@ async def main():
     # Запускаем фоновую задачу пополнения раз в 30 дней
     asyncio.create_task(periodic_30day_refill())
     asyncio.create_task(payment_nurture_loop())
+    asyncio.create_task(recurring_billing_loop())
     await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
