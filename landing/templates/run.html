@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Ходилка · Follow the Frensy</title>
+    <meta name="description" content="Ходилка Follow the Frensy: летающий ангелочек, потом чертенок с трезубцем.">
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="theme-color" content="#030308">
+    <link rel="canonical" href="{{ canonical_url }}">
+    <link rel="icon" href="{{ url_for('static', filename='images/favicon.ico') }}?v=1" sizes="any">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}?v=121">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/run.css') }}?v=3">
+</head>
+<body class="run-page">
+    <a class="skip-link" href="#run-stage">К игре</a>
+    <header class="run-bar">
+        <a class="run-back" href="{{ url_for('index') }}">← На сайт</a>
+        <p class="run-kicker">Follow the Frensy</p>
+        <button type="button" class="run-pause-btn" id="run-pause-btn">Пауза</button>
+    </header>
+    <main class="run-wrap" id="run-stage">
+        <p class="run-hint" id="run-hint">Удерживай пробел / клик — лететь · P — пауза</p>
+        <div class="run-hud">
+            <span>очки <b id="run-score">0</b></span>
+            <span>рекорд <b id="run-hi">0</b></span>
+        </div>
+        <canvas id="run-canvas" width="1600" height="640" aria-label="Поле ходилки"></canvas>
+        <div class="run-over" id="run-pause" hidden>
+            <p class="run-over-title">пауза</p>
+            <button type="button" class="btn btn-solid" id="run-resume">Дальше</button>
+        </div>
+        <div class="run-over" id="run-over" hidden>
+            <p class="run-over-title">пауза судьбы</p>
+            <p class="run-over-sub" id="run-over-score"></p>
+            <button type="button" class="btn btn-solid" id="run-retry">Ещё раз</button>
+        </div>
+    </main>
+    <p class="run-legal">© {{ year }} Роксана Аметист</p>
+    <script src="{{ url_for('static', filename='js/run.js') }}?v=12" defer></script>
+</body>
+</html>

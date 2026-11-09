@@ -1,0 +1,47 @@
+{# Shared consult lead form — include with optional lead_source #}
+<section
+    class="seo-block lead-block{% if jelly_hero %} jelly-stage jelly-stage--copy-right{% endif %}"
+    id="lead"
+    aria-labelledby="lead-title"
+    {% if jelly_hero %}data-jelly-stage data-jkind="gem" data-jx="-2.0" data-jy="0.15" data-jz="-0.55" data-js="0.88" data-jry="0.35"{% endif %}
+>
+    <div class="{% if jelly_hero %}jelly-stage__copy{% endif %}">
+    <h2 id="lead-title" class="seo-block-title">Заявка на консультацию</h2>
+    <p class="seo-block-lead">Оставьте контакт — Роксана свяжется в мессенджере.</p>
+    <form class="lead-form" action="/api/lead" method="post" novalidate>
+        <input type="hidden" name="source" value="{{ lead_source | default('landing') }}">
+        <input type="hidden" name="page" value="{{ canonical_url | default('') }}">
+        <input class="lead-hp" type="text" name="company" value="" tabindex="-1" autocomplete="off" aria-hidden="true">
+
+        <label class="lead-field">
+            <span>Имя</span>
+            <input type="text" name="name" required minlength="2" maxlength="80" autocomplete="name" placeholder="Как к вам обращаться">
+        </label>
+        <label class="lead-field">
+            <span>Telegram, WhatsApp или телефон</span>
+            <input type="text" name="contact" required minlength="3" maxlength="120" autocomplete="tel" placeholder="@username или +7…">
+        </label>
+        <label class="lead-field">
+            <span>Тема <em>(необязательно)</em></span>
+            <input type="text" name="topic" maxlength="200" placeholder="Отношения, бывший, работа…">
+        </label>
+        <label class="lead-check">
+            <input type="checkbox" name="consent_pd" value="1" required>
+            <span>Согласен(на) на обработку персональных данных по <a href="{{ privacy_url }}" target="_blank" rel="noopener">политике</a></span>
+        </label>
+        <label class="lead-check">
+            <input type="checkbox" name="consent_tb" value="1" required>
+            <span>Согласен(на) на трансграничную передачу данных (мессенджеры, сайт/прокси в Германии, языковая модель — см. <a href="{{ privacy_url }}" target="_blank" rel="noopener">политику</a>)</span>
+        </label>
+        <label class="lead-check">
+            <input type="checkbox" name="consent_oferta" value="1" required>
+            <span>Принимаю <a href="{{ oferta_url }}" target="_blank" rel="noopener">оферту</a>, мне есть 18 лет. Услуга консультационная: не медицина и не гарантия событий в жизни.</span>
+        </label>
+        <p class="lead-status" hidden role="status"></p>
+        <div class="lead-actions">
+            <button type="submit" class="btn btn-solid">Отправить заявку</button>
+            <a class="btn btn-line lead-bot-link" href="{{ bot_url }}" target="_blank" rel="noopener">Сначала бот</a>
+        </div>
+    </form>
+    </div>
+</section>

@@ -1,0 +1,20 @@
+from pathlib import Path
+
+p = Path("/root/tarolog/.env")
+t = p.read_text(encoding="utf-8")
+lines = t.splitlines(keepends=True)
+found = False
+out = []
+for line in lines:
+    if line.startswith("LLM_PUBLIC_STUB="):
+        out.append("LLM_PUBLIC_STUB=0\n")
+        found = True
+    else:
+        out.append(line)
+if not found:
+    if out and not str(out[-1]).endswith("\n"):
+        out.append("\n")
+    out.append("LLM_PUBLIC_STUB=0\n")
+p.write_text("".join(out), encoding="utf-8")
+print("stub_set", "replaced" if found else "appended")
+print("verify", next(l.strip() for l in p.read_text(encoding="utf-8").splitlines() if l.startswith("LLM_PUBLIC_STUB=")))

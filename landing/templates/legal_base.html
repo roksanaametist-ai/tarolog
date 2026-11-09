@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ legal_title }}</title>
+    <meta name="description" content="{{ legal_description }}">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="{{ canonical_url }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/fonts.css') }}?v=1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/legal.css') }}?v=3">
+</head>
+<body>
+<div class="legal-wrap">
+    <nav class="legal-nav" aria-label="Документы">
+        <a class="legal-home" href="/">Follow the Frensy</a>
+        <a href="{{ privacy_url }}">Политика ПД</a>
+        <a href="{{ oferta_url }}">Оферта</a>
+    </nav>
+    {% block legal_body %}{% endblock %}
+    <footer class="legal-foot">
+        <p>Самозанятая {{ operator_name }} · ИНН {{ operator_inn }} · {{ operator_city }}</p>
+        {% if operator_email %}<p><a href="mailto:{{ operator_email }}">{{ operator_email }}</a></p>{% endif %}
+        <p><a href="/">На главную</a> · <a href="{{ privacy_url }}">Политика ПД</a> · <a href="{{ oferta_url }}">Оферта</a></p>
+    </footer>
+</div>
+</body>
+</html>

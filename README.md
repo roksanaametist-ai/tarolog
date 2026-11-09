@@ -22,7 +22,7 @@ cd "путь\к\TarGPT3"
 
 ## Деплой
 
-**Продакшен (HSHP VPS, `followthefrensy.ru`):** см. `DEPLOY-HSHP.md`  
+**Продакшен (HSHP VPS, `followthefrensy.com`):** см. `DEPLOY-HSHP.md`  
 Бот — systemd, лендинг — Gunicorn + nginx. WebApp `/cards` и `/yesno` уже на сервере.
 
 **Альтернатива (Amvera):** см. `DEPLOY-AMVERA.md` — два облачных проекта, если VPS не используете.

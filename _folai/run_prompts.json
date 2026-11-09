@@ -1,0 +1,72 @@
+{
+  "model": "fal-ai/kling-video/v2.1/master/image-to-video",
+  "duration": "5",
+  "aspect_ratio": "1:1",
+  "global_lock": "Telegram sticker style marble sculpture on pure black void #050505. Soft studio lighting, tiny gold stars optional. Locked camera: same framing, same scale, no zoom, no orbit, no cut. Continuous lively motion. No text, no UI, no watermark. Character must match start/end stills.",
+  "clips": [
+    {
+      "id": "RUN_ANGEL",
+      "file": "run-clip-angel-fly.mp4",
+      "sheet": "angel-fly.png",
+      "start": "run/01-angel-low.png",
+      "end": "run/02-angel-high.png",
+      "prompt": "Marble cherub sticker on black void, locked camera. SAME cherub flying RIGHT. Lively wing flap cycle: wings rise from low to high, body bobs gently, joyful alive expression. White marble putto, gold stars. End must match tail still wing-up pose. FORBIDDEN: camera move, extra character, red devil, text."
+    },
+    {
+      "id": "RUN_IMP_A",
+      "file": "run-clip-imp-jump-a.mp4",
+      "sheet": "imp-jump-a.png",
+      "start": "run/03-imp-a-crouch.png",
+      "end": "run/04-imp-a-peak.png",
+      "prompt": "Crimson ruby-red marble little devil sticker on black void, locked camera. Facing LEFT. STRONG jump: crouch then explosive high hop, arms up, tail whip, laughing face. Red polished marble statue. End matches peak tail still. FORBIDDEN: camera move, white cherub, text."
+    },
+    {
+      "id": "RUN_IMP_B",
+      "file": "run-clip-imp-jump-b.mp4",
+      "sheet": "imp-jump-b.png",
+      "start": "run/05-imp-b-coil.png",
+      "end": "run/06-imp-b-peak.png",
+      "prompt": "Crimson ruby-red marble imp sticker, locked camera, facing LEFT. DIFFERENT jump: sideways skip twist, tongue out playfully, strong diagonal hop. Same red marble family. End matches tail still. FORBIDDEN: camera move, cherub, text."
+    },
+    {
+      "id": "RUN_IMP_C",
+      "file": "run-clip-imp-jump-c.mp4",
+      "sheet": "imp-jump-c.png",
+      "start": "run/07-imp-c-prep.png",
+      "end": "run/08-imp-c-peak.png",
+      "prompt": "Crimson ruby-red marble imp sticker, locked camera, facing LEFT. Double-bounce hop: small prep then BIG second hop higher, smug eyes closed at apex. Very alive. End matches tail still. FORBIDDEN: camera move, cherub, text."
+    },
+    {
+      "id": "RUN_CHERUB_FLY",
+      "file": "run-clip-cherub-fly.mp4",
+      "sheet": "cherub-fly.png",
+      "start": "run/cherub-fly-low.png",
+      "end": "run/cherub-fly-high.png",
+      "prompt": "White marble cherub sticker, locked camera, flying LEFT. Holds gold heart forward in both hands, gentle wing flap, subtle bob while flying toward left. Lively but soft. End slightly higher. No devil, no text."
+    },
+    {
+      "id": "RUN_CHERUB_STAND",
+      "file": "run-clip-cherub-stand.mp4",
+      "sheet": "cherub-stand.png",
+      "start": "run/cherub-stand-a.png",
+      "end": "run/cherub-stand-b.png",
+      "prompt": "White marble cherub sticker, locked camera, standing facing LEFT. Holds heart at chest, tiny idle sway and blink, wings barely move — mostly stationary. Minimal motion. No devil, no text."
+    },
+    {
+      "id": "RUN_CHERUB_BACK",
+      "file": "run-clip-cherub-back.mp4",
+      "sheet": "cherub-back.png",
+      "start": "run/cherub-back-low.png",
+      "end": "run/cherub-back-high.png",
+      "prompt": "White marble cherub sticker, locked camera, back toward LEFT. SUBTLE hover in place: gentle bob up-down, heart at side, looking over shoulder. Butt toward left/demon direction. Small motion only, cute not sexual. No devil, no text."
+    },
+    {
+      "id": "RUN_DEMON",
+      "file": "run-clip-demon-stab.mp4",
+      "sheet": "demon-stab.png",
+      "start": "run/11-demon-ready.png",
+      "end": "run/12-demon-stab.png",
+      "prompt": "Crimson ruby-red marble imp with silver trident sticker, locked camera, lunging LEFT. Lively stab: cocky ready then full thrust trident extended, yelling joyfully. Red marble hero. End matches thrust tail still. FORBIDDEN: camera move, extra character, text."
+    }
+  ]
+}

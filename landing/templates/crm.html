@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
+    <title>CRM — Follow the Frensy</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/fonts.css') }}?v=1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/crm.css') }}">
+</head>
+<body class="crm-body">
+    <header class="crm-head">
+        <div>
+            <p class="crm-kicker">Follow the Frensy</p>
+            <h1>Клиенты</h1>
+        </div>
+        <div class="crm-head-actions">
+            <button type="button" class="btn btn-primary" id="crm-add">+ Карточка</button>
+            <button type="button" class="btn btn-ghost" id="crm-import">Подтянуть заявки с сайта</button>
+            <a class="btn btn-ghost" href="{{ url_for('crm_logout') }}">Выйти</a>
+        </div>
+    </header>
+    <p class="crm-hint">Не тащим сюда тексты раскладов — только имя, контакт, формат, статус и заметка.</p>
+    <div class="crm-board" id="crm-board"></div>
+    <script src="{{ url_for('static', filename='js/crm.js') }}" defer></script>
+</body>
+</html>

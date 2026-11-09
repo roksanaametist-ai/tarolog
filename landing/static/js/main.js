@@ -126,6 +126,14 @@
         const fd = new FormData(form);
         const name = (fd.get("name") || "").toString().trim();
         const contact = (fd.get("contact") || "").toString().trim();
+        const consent_pd = fd.get("consent_pd") === "1";
+        const consent_tb = fd.get("consent_tb") === "1";
+        const consent_oferta = fd.get("consent_oferta") === "1";
+        if (!consent_pd || !consent_tb || !consent_oferta) {
+            formError.textContent = "Нужны три отдельные отметки: обработка данных, трансграничная передача и оферта.";
+            formError.hidden = false;
+            return;
+        }
 
         const submitBtn = form.querySelector('button[type="submit"]');
         submitBtn.disabled = true;
@@ -134,7 +142,7 @@
             const res = await fetch("/api/lead", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ name, contact }),
+                body: JSON.stringify({ name, contact, consent_pd: true, consent_tb: true, consent_oferta: true }),
             });
             const data = await res.json();
 

@@ -1,0 +1,293 @@
+"""Grant subscription after Robokassa ResultURL (used by landing Flask)."""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import urllib.parse
+import urllib.request
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Optional
+
+import shared_wallet
+
+from bot_core import robokassa_store
+
+logger = logging.getLogger(__name__)
+
+PLAN_DAYS = {
+    "sub_m_111": 31,
+    "sub_m_555": 31,
+    "sub_m_999": 31,
+    # legacy keys (if old pending somehow)
+    "sub_7d_399": 31,
+    "sub_14d_499": 93,
+    "sub_30d_699": 365,
+}
+
+PLAN_LABELS = {
+    "sub_m_111": "Месяц безлимит — 111 ₽",
+    "sub_m_555": "Месяц безлимит — 555 ₽",
+    "sub_m_999": "Месяц безлимит — 999 ₽",
+}
+
+
+def _data_dir() -> Path:
+    for key in ("BOT_DATA_DIR", "LANDING_DATA_DIR"):
+        raw = (os.getenv(key) or "").strip()
+        if not raw:
+            continue
+        configured = Path(raw)
+        if configured.exists():
+            return configured.resolve()
+    return Path(__file__).resolve().parent.parent
+
+
+def _user_data_path() -> Path:
+    return _data_dir() / "user_data.json"
+
+
+def _payment_stats_path() -> Path:
+    return _data_dir() / "payment_data.json"
+
+
+def _nurture_path() -> Path:
+    return _data_dir() / "payment_nurture.json"
+
+
+def _stack_subscription_end(current: Optional[str], days: int) -> str:
+    now = datetime.now()
+    base = now
+    if current:
+        try:
+            end = datetime.strptime(current, "%Y-%m-%d %H:%M:%S")
+            if end > now:
+                base = end
+        except ValueError:
+            pass
+    return (base + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+
+def _patch_users_store(chat_id: int, changes: dict[str, Any]) -> None:
+    """Write grant into SQLite operational store so the live bot sees it."""
+    try:
+        from bot_core.operational_store import OperationalStore
+    except Exception as exc:
+        logger.warning("operational_store import failed: %s", exc)
+        _patch_user_data(chat_id, changes)
+        return
+
+    store = OperationalStore(_data_dir() / "bot_state.sqlite3")
+    key = str(int(chat_id))
+
+    def mutator(disk: Any) -> Any:
+        data = disk if isinstance(disk, dict) else {}
+        rec = data.get(key)
+        if not isinstance(rec, dict):
+            rec = {"questions": 5, "username": None}
+            data[key] = rec
+        for field, value in changes.items():
+            rec[field] = value
+        data[key] = rec
+        return data
+
+    try:
+        store.update_document(
+            "users",
+            mutator,
+            legacy_path=_user_data_path(),
+            source="robokassa_fulfill",
+            default={},
+        )
+    except Exception as exc:
+        logger.warning("store update failed, fallback json: %s", exc)
+        _patch_user_data(chat_id, changes)
+
+
+def _patch_user_data(chat_id: int, changes: dict[str, Any]) -> None:
+    path = _user_data_path()
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    key = str(int(chat_id))
+    rec = data.get(key)
+    if not isinstance(rec, dict):
+        rec = {"questions": 5, "username": None}
+        data[key] = rec
+    for field, value in changes.items():
+        rec[field] = value
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def _bump_payment_stats(amount_kopecks: int, plan_key: str) -> None:
+    path = _payment_stats_path()
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data["total_rub"] = float(data.get("total_rub") or 0) + amount_kopecks / 100.0
+    data["count"] = int(data.get("count") or 0) + 1
+    by_plan = data.setdefault("by_plan", {})
+    if isinstance(by_plan, dict):
+        by_plan[plan_key] = int(by_plan.get(plan_key) or 0) + 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, ensure_ascii=False, indent=2)
+
+
+def _mark_nurture_done(chat_id: int) -> None:
+    path = _nurture_path()
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return
+    if not isinstance(data, dict):
+        return
+    rec = data.get(str(int(chat_id)))
+    if isinstance(rec, dict):
+        rec["completed"] = True
+        rec["stage"] = "done"
+        data[str(int(chat_id))] = rec
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+
+
+def notify_telegram(chat_id: int, text: str) -> bool:
+    token = (os.getenv("TELEGRAM_TOKEN") or "").strip()
+    if not token:
+        return False
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    body = urllib.parse.urlencode(
+        {"chat_id": int(chat_id), "text": text}
+    ).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return 200 <= resp.status < 300
+    except Exception as exc:
+        logger.warning("telegram notify failed chat_id=%s: %s", chat_id, exc)
+        return False
+
+
+def fulfill_invoice(inv_id: int, *, out_sum: Optional[str] = None) -> dict[str, Any]:
+    """
+    Idempotent grant for paid InvId.
+    Returns dict with keys: ok, already, chat_id, plan_key, message
+    """
+    existing = robokassa_store.get_invoice(inv_id)
+    if not existing:
+        # Fallback: Shp params should have created pending; without it we cannot grant safely
+        return {"ok": False, "error": "unknown invoice", "inv_id": inv_id}
+
+    already = existing.get("status") == "paid" and existing.get("fulfilled")
+    if already:
+        return {
+            "ok": True,
+            "already": True,
+            "chat_id": existing.get("chat_id"),
+            "plan_key": existing.get("plan_key"),
+        }
+
+    paid = robokassa_store.mark_paid(inv_id)
+    if not paid:
+        return {"ok": False, "error": "mark_paid failed", "inv_id": inv_id}
+
+    chat_id = int(paid["chat_id"])
+    plan_key = str(paid.get("plan_key") or "")
+    amount_kopecks = int(paid.get("amount_kopecks") or 0)
+    days = int(PLAN_DAYS.get(plan_key, 31))
+    kind = str(paid.get("kind") or "parent")
+
+    seed = None
+    try:
+        with open(_user_data_path(), "r", encoding="utf-8") as handle:
+            ud = json.load(handle)
+        if isinstance(ud, dict) and isinstance(ud.get(str(chat_id)), dict):
+            seed = ud[str(chat_id)]
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        seed = None
+
+    current = shared_wallet.view("tg", chat_id, seed)
+    new_end = _stack_subscription_end(current.get("subscription_end"), days)
+
+    changes: dict[str, Any] = {
+        "subscription_end": new_end,
+        "subscription_plan_key": plan_key,
+        "subscription_price": amount_kopecks,
+        "last_robokassa_inv_id": int(inv_id),
+        "payment_provider": "robokassa",
+        "auto_renew": True,
+        "renew_fail_count": 0,
+        "next_renew_at": None,
+    }
+    if kind == "parent":
+        changes["robokassa_prev_invoice_id"] = int(inv_id)
+    elif not current.get("robokassa_prev_invoice_id"):
+        parent = paid.get("parent_inv_id")
+        if parent:
+            changes["robokassa_prev_invoice_id"] = int(parent)
+
+    wallet = shared_wallet.update("tg", chat_id, seed, changes)
+    _patch_users_store(chat_id, {k: wallet.get(k) for k in changes})
+    try:
+        _bump_payment_stats(amount_kopecks, plan_key)
+    except OSError:
+        pass
+    _mark_nurture_done(chat_id)
+
+    # mark fulfilled flag on invoice
+    path = robokassa_store.store_path()
+    with robokassa_store._FileLock(path):
+        data = robokassa_store._load(path)
+        rec = data["invoices"].get(str(int(inv_id)))
+        if isinstance(rec, dict):
+            rec["fulfilled"] = True
+            data["invoices"][str(int(inv_id))] = rec
+            robokassa_store._save(path, data)
+
+    label = PLAN_LABELS.get(plan_key, "Подписка")
+    end_human = datetime.strptime(new_end, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y")
+    if kind == "parent":
+        text = (
+            f"Оплата прошла успешно ✨\n"
+            f"Тариф: {label}\n"
+            f"Безлимит до {end_human}.\n"
+            f"Автопродление включено — отменить можно в меню «💳 Оформить подписку»."
+        )
+    else:
+        text = (
+            f"Автопродление прошло успешно ✨\n"
+            f"Тариф: {label}\n"
+            f"Подписка продлена до {end_human}."
+        )
+
+    notified = False
+    if not paid.get("notify_sent"):
+        notified = notify_telegram(chat_id, text)
+        if notified:
+            robokassa_store.mark_notify_sent(inv_id)
+
+    return {
+        "ok": True,
+        "already": False,
+        "chat_id": chat_id,
+        "plan_key": plan_key,
+        "subscription_end": new_end,
+        "notified": notified,
+        "out_sum": out_sum,
+    }

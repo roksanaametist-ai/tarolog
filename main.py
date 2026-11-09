@@ -24,6 +24,9 @@ import uuid
 import random
 from pathlib import Path
 
+from privacy_scrub import scrub_prompt_text
+import shared_wallet
+
 load_dotenv()
 
 
@@ -53,8 +56,8 @@ client = OpenAI(
 )
 
 # URLs мини‑приложений (WebApp)
-CARDS_WEBAPP_URL = os.getenv("CARDS_WEBAPP_URL", "https://followthefrensy.ru/cards").strip()
-YESNO_WEBAPP_URL = os.getenv("YESNO_WEBAPP_URL", "https://followthefrensy.ru/yesno").strip()
+CARDS_WEBAPP_URL = os.getenv("CARDS_WEBAPP_URL", "https://followthefrensy.com/cards").strip()
+YESNO_WEBAPP_URL = os.getenv("YESNO_WEBAPP_URL", "https://followthefrensy.com/yesno").strip()
 LANDING_START_PARAM = os.getenv("LANDING_BOT_START_PARAM", "site").strip()
 
 CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/follow_the_frensy").strip()
@@ -76,6 +79,13 @@ CONSULTATION_VIDEO_PATH = os.getenv(
 
 channel_id = -1001887928983
 BOT_STATIC_ADMINS = {491482483}
+# Пожизненный безлимит (не владелец).
+LLM_STUB_ALLOW_IDS = set(BOT_STATIC_ADMINS)
+# Временная заглушка нейросети для всех, кроме allow-list (РКН / трансграничка).
+LLM_PUBLIC_STUB = os.getenv("LLM_PUBLIC_STUB", "1").strip().lower() not in {"0", "false", "no", "off"}
+LLM_PUBLIC_STUB_TEXT = (
+    "Интерпретации раскладов с помощью нейросети будут доступны позднее"
+)
 ADMIN_STATS_BUTTON = "📊 Статистика"
 # Секретная команда вместо устаревшей /total_users123 (задайте свою в .env)
 ADMIN_CMD_TOTAL_USERS = os.getenv("ADMIN_CMD_TOTAL_USERS", "u9k2m7p4q1").strip().lstrip("/")
@@ -212,42 +222,68 @@ class UserData:
             }
             self.save_data()
 
+    def _pull_wallet(self, chat_id: int) -> dict:
+        seed = self.data.get(str(chat_id))
+        wallet = shared_wallet.view("tg", int(chat_id), seed)
+        shared_wallet.mirror(seed, wallet)
+        return wallet
+
+    def _commit_wallet(self, chat_id: int, changes: dict) -> dict:
+        seed = self.data.get(str(chat_id))
+        wallet = shared_wallet.update("tg", int(chat_id), seed, changes)
+        shared_wallet.mirror(seed, wallet)
+        self.save_data()
+        return wallet
+
     def get_user_questions(self, chat_id: int) -> int:
-        return self.data.get(str(chat_id), {}).get('questions', 0)
+        if str(chat_id) not in self.data:
+            return 0
+        return int(self._pull_wallet(chat_id).get("questions") or 0)
 
     def decrement_user_questions(self, chat_id: int) -> None:
         key = str(chat_id)
-        if key in self.data and self.data[key]['questions'] > 0:
-            self.data[key]['questions'] -= 1
-            self.save_data()
+        if key not in self.data:
+            return
+        updated = shared_wallet.add_questions("tg", int(chat_id), -1, self.data.get(key))
+        if not updated:
+            return
+        shared_wallet.mirror(self.data.get(key), updated)
+        self.save_data()
 
     def increment_user_questions(self, chat_id: int, amount: int) -> None:
-        if str(chat_id) in self.data:
-            self.data[str(chat_id)]['questions'] += amount
-            self.save_data()
+        key = str(chat_id)
+        if key not in self.data:
+            return
+        updated = shared_wallet.add_questions("tg", int(chat_id), int(amount), self.data.get(key))
+        if not updated:
+            return
+        shared_wallet.mirror(self.data.get(key), updated)
+        self.save_data()
 
     def set_user_questions(self, chat_id: int, amount: int) -> None:
         """Устанавливает конкретное количество вопросов пользователю."""
         if str(chat_id) not in self.data:
             self.add_user(chat_id)
-        self.data[str(chat_id)]['questions'] = amount
-        self.save_data()
+        self._commit_wallet(chat_id, {"questions": int(amount)})
 
     def set_subscription_end(self, chat_id: int, end_time_str: str) -> None:
         if str(chat_id) in self.data:
-            # Преобразуем строку в объект datetime
-            end_time = datetime.strptime(end_time_str, '%Y-%m-%d %H:%M:%S')
-            self.data[str(chat_id)]['subscription_end'] = end_time_str
-            self.save_data()
+            datetime.strptime(end_time_str, '%Y-%m-%d %H:%M:%S')
+            self._commit_wallet(chat_id, {"subscription_end": end_time_str})
 
     def get_subscription_end(self, chat_id: int) -> Optional[datetime]:
-        end_time_str = self.data.get(str(chat_id), {}).get('subscription_end')
+        if str(chat_id) not in self.data:
+            return None
+        end_time_str = self._pull_wallet(chat_id).get("subscription_end")
         if end_time_str:
             return datetime.strptime(end_time_str, '%Y-%m-%d %H:%M:%S')
         return None
 
     def extend_subscription(self, chat_id: int, days: int) -> None:
-        new_end = datetime.now() + timedelta(days=days)
+        now = datetime.now()
+        current = self.get_subscription_end(chat_id)
+        base = current if current and current > now else now
+        new_end = base + timedelta(days=days)
         self.set_subscription_end(chat_id, new_end.strftime('%Y-%m-%d %H:%M:%S'))
 
     def _ensure_user(self, chat_id: int) -> dict:
@@ -264,68 +300,101 @@ class UserData:
         plan_key: str,
         price_kopecks: int,
     ) -> None:
-        u = self._ensure_user(chat_id)
-        u["yookassa_payment_method_id"] = payment_method_id
-        u["subscription_plan_key"] = plan_key
-        u["subscription_price"] = int(price_kopecks)
-        u["auto_renew"] = True
-        u["renew_fail_count"] = 0
-        u["next_renew_at"] = None
-        self.save_data()
+        self._ensure_user(chat_id)
+        self._commit_wallet(
+            chat_id,
+            {
+                "yookassa_payment_method_id": payment_method_id,
+                "subscription_plan_key": plan_key,
+                "subscription_price": int(price_kopecks),
+                "auto_renew": True,
+                "renew_fail_count": 0,
+                "next_renew_at": None,
+            },
+        )
 
     def disable_auto_renew(self, chat_id: int) -> bool:
         """Выключает автопродление. method_id оставляем на месте. Возвращает True, если было включено."""
-        key = str(chat_id)
-        if key not in self.data:
+        if str(chat_id) not in self.data:
             return False
-        was = bool(self.data[key].get("auto_renew"))
-        self.data[key]["auto_renew"] = False
-        self.data[key]["next_renew_at"] = None
-        self.data[key]["renew_fail_count"] = 0
-        self.save_data()
+        was = bool(self._pull_wallet(chat_id).get("auto_renew"))
+        self._commit_wallet(
+            chat_id,
+            {"auto_renew": False, "next_renew_at": None, "renew_fail_count": 0},
+        )
         return was
 
     def is_auto_renew_enabled(self, chat_id: int) -> bool:
-        return bool(self.data.get(str(chat_id), {}).get("auto_renew"))
+        if str(chat_id) not in self.data:
+            return False
+        return bool(self._pull_wallet(chat_id).get("auto_renew"))
 
     def get_payment_method_id(self, chat_id: int) -> Optional[str]:
-        val = self.data.get(str(chat_id), {}).get("yookassa_payment_method_id")
+        if str(chat_id) not in self.data:
+            return None
+        val = self._pull_wallet(chat_id).get("yookassa_payment_method_id")
+        return str(val) if val else None
+
+    def get_robokassa_prev_invoice_id(self, chat_id: int) -> Optional[int]:
+        if str(chat_id) not in self.data:
+            return None
+        val = self._pull_wallet(chat_id).get("robokassa_prev_invoice_id")
+        try:
+            return int(val) if val is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def get_payment_provider(self, chat_id: int) -> Optional[str]:
+        if str(chat_id) not in self.data:
+            return None
+        val = self._pull_wallet(chat_id).get("payment_provider")
         return str(val) if val else None
 
     def get_subscription_plan_key(self, chat_id: int) -> Optional[str]:
-        return self.data.get(str(chat_id), {}).get("subscription_plan_key")
+        if str(chat_id) not in self.data:
+            return None
+        return self._pull_wallet(chat_id).get("subscription_plan_key")
 
     def get_subscription_price(self, chat_id: int) -> Optional[int]:
-        val = self.data.get(str(chat_id), {}).get("subscription_price")
+        if str(chat_id) not in self.data:
+            return None
+        val = self._pull_wallet(chat_id).get("subscription_price")
         try:
             return int(val) if val is not None else None
         except (TypeError, ValueError):
             return None
 
     def set_renew_failure(self, chat_id: int, *, fail_count: int, next_renew_at: Optional[datetime]) -> None:
-        u = self._ensure_user(chat_id)
-        u["renew_fail_count"] = int(fail_count)
-        u["next_renew_at"] = (
-            next_renew_at.strftime("%Y-%m-%d %H:%M:%S") if next_renew_at else None
-        )
+        self._ensure_user(chat_id)
+        changes = {
+            "renew_fail_count": int(fail_count),
+            "next_renew_at": (
+                next_renew_at.strftime("%Y-%m-%d %H:%M:%S") if next_renew_at else None
+            ),
+        }
         if fail_count >= 3:
-            u["auto_renew"] = False
-        self.save_data()
+            changes["auto_renew"] = False
+        self._commit_wallet(chat_id, changes)
 
     def clear_renew_failure(self, chat_id: int) -> None:
-        u = self._ensure_user(chat_id)
-        u["renew_fail_count"] = 0
-        u["next_renew_at"] = None
-        self.save_data()
+        self._ensure_user(chat_id)
+        self._commit_wallet(chat_id, {"renew_fail_count": 0, "next_renew_at": None})
 
     def iter_users_due_renewal(self, now: Optional[datetime] = None) -> List[int]:
         """Пользователи с auto_renew, у которых пора списывать (≤1 день до конца или next_renew_at)."""
         now = now or datetime.now()
+        shared_wallet.pull_into("tg", self.data)
         due: List[int] = []
         for key, u in self.data.items():
             if not u.get("auto_renew"):
                 continue
-            if not u.get("yookassa_payment_method_id"):
+            provider = (u.get("payment_provider") or PAYMENT_PROVIDER or "").lower()
+            has_method = bool(u.get("yookassa_payment_method_id"))
+            has_robo = bool(u.get("robokassa_prev_invoice_id"))
+            if provider == "robokassa":
+                if not has_robo:
+                    continue
+            elif not has_method and not has_robo:
                 continue
             price = u.get("subscription_price")
             plan = u.get("subscription_plan_key")
@@ -354,11 +423,12 @@ class UserData:
         if not self.is_valid_email(email):
             raise ValueError("Некорректный email адрес.")
         if str(chat_id) in self.data:
-            self.data[str(chat_id)]['email'] = email
-            self.save_data()
+            self._commit_wallet(chat_id, {"email": email})
 
     def get_user_email(self, chat_id: int) -> Optional[str]:
-        return self.data.get(str(chat_id), {}).get('email')
+        if str(chat_id) not in self.data:
+            return None
+        return self._pull_wallet(chat_id).get("email")
 
     def is_valid_email(self, email: str) -> bool:
         return bool(re.match(r"[^@]+@[^@]+\.[^@]+", email))
@@ -371,19 +441,20 @@ class UserData:
         return [int(chat_id) for chat_id in all_ids if chat_id not in excluded_ids_str]
 
     def get_last_refill_at(self, chat_id: int) -> Optional[datetime]:
-        val = self.data.get(str(chat_id), {}).get('last_refill_at')
+        if str(chat_id) not in self.data:
+            return None
+        val = self._pull_wallet(chat_id).get("last_refill_at")
         if not val:
             return None
         try:
-            return datetime.strptime(val, '%Y-%m-%d %H:%M:%S')
+            return datetime.strptime(val, "%Y-%m-%d %H:%M:%S")
         except ValueError:
             return None
 
     def set_last_refill_at(self, chat_id: int, dt: datetime) -> None:
         if str(chat_id) not in self.data:
             self.add_user(chat_id)
-        self.data[str(chat_id)]['last_refill_at'] = dt.strftime('%Y-%m-%d %H:%M:%S')
-        self.save_data()
+        self._commit_wallet(chat_id, {"last_refill_at": dt.strftime("%Y-%m-%d %H:%M:%S")})
 
     def get_referred_by(self, chat_id: int) -> Optional[int]:
         val = self.data.get(str(chat_id), {}).get('referred_by')
@@ -420,6 +491,7 @@ class UserData:
         return int(self.data.get(str(chat_id), {}).get('referrals_count', 0))
 
     def get_aggregate_stats(self) -> dict:
+        shared_wallet.pull_into("tg", self.data)
         now = datetime.now()
         top_referrers: List[tuple] = []
         stats = {
@@ -493,34 +565,33 @@ grant_state = GrantState(data_file("grant_state.json"))
 PAYMENT_NURTURE_FILE = data_file("payment_nurture.json")
 
 PLAN_LABELS = {
-    "sub_10_169": "10 запросов — 169 ₽",
-    "sub_7d_399": "Месяц безлимит — 359 ₽",
-    "sub_14d_499": "3 месяца безлимит — 999 ₽",
-    "sub_30d_699": "Год безлимит — 2999 ₽",
+    "sub_m_111": "Месяц безлимит — 111 ₽",
+    "sub_m_555": "Месяц безлимит — 555 ₽",
+    "sub_m_999": "Месяц безлимит — 999 ₽",
 }
 
-# Безлимитные тарифы с автопродлением (не пакет вопросов)
-RECURRING_PLAN_KEYS = frozenset({"sub_7d_399", "sub_14d_499", "sub_30d_699"})
+# Все три тарифа = 1 месяц безлимита + автопродление (Robokassa Recurring)
+RECURRING_PLAN_KEYS = frozenset({"sub_m_111", "sub_m_555", "sub_m_999"})
 
 PLAN_PRICE_KOPECKS = {
-    "sub_10_169": 16900,
-    "sub_7d_399": 35900,
-    "sub_14d_499": 99900,
-    "sub_30d_699": 299900,
+    "sub_m_111": 11100,
+    "sub_m_555": 55500,
+    "sub_m_999": 99900,
 }
 
 PLAN_DAYS = {
-    "sub_7d_399": 31,
-    "sub_14d_499": 93,
-    "sub_30d_699": 365,
+    "sub_m_111": 31,
+    "sub_m_555": 31,
+    "sub_m_999": 31,
 }
 
 PRICE_TO_PLAN_KEY = {
-    16900: "sub_10_169",
-    35900: "sub_7d_399",
-    99900: "sub_14d_499",
-    299900: "sub_30d_699",
+    11100: "sub_m_111",
+    55500: "sub_m_555",
+    99900: "sub_m_999",
 }
+
+PAYMENT_PROVIDER = (os.getenv("PAYMENT_PROVIDER") or "robokassa").strip().lower()
 
 REFERRAL_HINT = (
     "\n\n👥 Реферальная система: «Пригласить друга (+5)» в меню — "
@@ -665,24 +736,13 @@ def user_has_active_subscription(chat_id: int) -> bool:
 
 
 async def apply_subscription_payment(chat_id: int, selected_price: int) -> bool:
-    """Начисляет подписку/вопросы после успешной оплаты YooKassa."""
-    prices = {16900: "10", 35900: "31d", 99900: "93d", 299900: "365d"}
-    selected_type = prices.get(selected_price)
-    if not selected_type:
+    """Начисляет месяц безлимита после успешной оплаты."""
+    plan_key = PRICE_TO_PLAN_KEY.get(int(selected_price))
+    if not plan_key:
         return False
-
-    if selected_type == "10":
-        user_data.increment_user_questions(chat_id, 10)
-    elif selected_type == "31d":
-        user_data.extend_subscription(chat_id, days=31)
-    elif selected_type == "93d":
-        user_data.extend_subscription(chat_id, days=93)
-    elif selected_type == "365d":
-        user_data.extend_subscription(chat_id, days=365)
-    else:
-        return False
-
-    update_payment_data(selected_price, selected_type)
+    days = PLAN_DAYS.get(plan_key, 31)
+    user_data.extend_subscription(chat_id, days=days)
+    update_payment_data(selected_price, "31d")
     payment_nurture.mark_completed(chat_id)
     return True
 
@@ -712,6 +772,7 @@ async def activate_payment_success(
     """Выдаёт покупку и при возможности включает автопродление."""
     payment_id = str(getattr(zakaz, "id", "") or "")
     u = user_data._ensure_user(chat_id)
+    user_data._pull_wallet(chat_id)
     if payment_id and u.get("last_yookassa_payment_id") == payment_id:
         return True  # уже обработан (check_payment + nurture)
 
@@ -719,8 +780,7 @@ async def activate_payment_success(
         return False
 
     if payment_id:
-        u["last_yookassa_payment_id"] = payment_id
-        user_data.save_data()
+        user_data._commit_wallet(chat_id, {"last_yookassa_payment_id": payment_id})
 
     plan_key = plan_key or PRICE_TO_PLAN_KEY.get(int(selected_price))
     if plan_key in RECURRING_PLAN_KEYS:
@@ -831,6 +891,48 @@ async def try_complete_pending_payment(chat_id: int, rec: dict) -> bool:
     plan_key = rec.get("plan_key")
     if not payment_id or not selected_price:
         return False
+
+    if str(payment_id).startswith("crypto:"):
+        try:
+            invoice_id = int(str(payment_id).split(":", 1)[1])
+            from bot_core.crypto_pay_fulfill import fulfill_if_paid
+
+            result = await asyncio.to_thread(fulfill_if_paid, invoice_id)
+        except Exception:
+            logging.exception("crypto nurture check failed chat_id=%s", chat_id)
+            return False
+        if result.get("ok"):
+            payment_nurture.mark_completed(chat_id)
+            return True
+        return False
+
+    # Robokassa: payment_id = InvId
+    if PAYMENT_PROVIDER == "robokassa" or str(payment_id).isdigit():
+        try:
+            from bot_core import robokassa_store
+
+            inv = robokassa_store.get_invoice(int(payment_id))
+            if inv and inv.get("status") == "paid":
+                user_data._pull_wallet(chat_id)
+                if user_has_active_subscription(chat_id):
+                    payment_nurture.mark_completed(chat_id)
+                    if not inv.get("notify_sent"):
+                        end = user_data.get_subscription_end(chat_id)
+                        end_s = end.strftime("%d.%m.%Y") if end else "—"
+                        await bot.send_message(
+                            chat_id,
+                            f"Оплата прошла успешно! Безлимит до {end_s} 🎉"
+                            "\n\nАвтопродление включено. Отменить — в меню «💳 Оформить подписку»."
+                            + REFERRAL_HINT,
+                            reply_markup=main_kb(chat_id),
+                        )
+                        robokassa_store.mark_notify_sent(int(payment_id))
+                    return True
+        except Exception:
+            pass
+        if PAYMENT_PROVIDER == "robokassa":
+            return False
+
     try:
         configure_yookassa()
         zakaz = Payment.find_one(payment_id)
@@ -907,12 +1009,58 @@ async def payment_nurture_loop():
 
 
 async def charge_recurring_subscription(chat_id: int) -> bool:
-    """Безакцептное списание по сохранённому способу оплаты. True = успех."""
-    pmid = user_data.get_payment_method_id(chat_id)
+    """Безакцептное списание. True = успех (или запрос Recurring принят — грант через ResultURL)."""
     plan_key = user_data.get_subscription_plan_key(chat_id)
     price = user_data.get_subscription_price(chat_id)
     email = user_data.get_user_email(chat_id)
-    if not pmid or not plan_key or not price or plan_key not in RECURRING_PLAN_KEYS:
+    provider = (user_data.get_payment_provider(chat_id) or PAYMENT_PROVIDER or "").lower()
+    if not plan_key or not price or plan_key not in RECURRING_PLAN_KEYS:
+        return False
+    if provider == "crypto":
+        return False
+
+    if provider == "robokassa" or (
+        user_data.get_robokassa_prev_invoice_id(chat_id) and provider != "yookassa"
+    ):
+        from bot_core import robokassa, robokassa_store
+
+        prev = user_data.get_robokassa_prev_invoice_id(chat_id)
+        if not prev:
+            logging.warning("Robokassa recurring skipped: no prev invoice chat_id=%s", chat_id)
+            return False
+        order_manager.increment_order_number()
+        inv_id = int(order_manager.get_order_number())
+        amount_rub = int(price) / 100.0
+        shp = {"chat_id": str(chat_id), "plan": plan_key}
+        robokassa_store.put_pending(
+            inv_id,
+            chat_id=chat_id,
+            plan_key=plan_key,
+            amount_kopecks=int(price),
+            kind="child",
+            parent_inv_id=prev,
+        )
+        try:
+            body = await asyncio.to_thread(
+                robokassa.request_recurring,
+                inv_id=inv_id,
+                previous_invoice_id=prev,
+                amount_rub=amount_rub,
+                description=f"Автопродление: {PLAN_LABELS.get(plan_key, 'подписка')}",
+                shp=shp,
+            )
+        except Exception as e:
+            logging.warning("Robokassa recurring request failed chat_id=%s: %s", chat_id, e)
+            return False
+        # OK{InvoiceId} = операция создана; факт оплаты подтвердит ResultURL
+        if "OK" in (body or "").upper():
+            user_data.clear_renew_failure(chat_id)
+            return True
+        logging.warning("Robokassa recurring unexpected body chat_id=%s: %s", chat_id, body)
+        return False
+
+    pmid = user_data.get_payment_method_id(chat_id)
+    if not pmid:
         return False
     if not email:
         logging.warning("Recurring charge skipped: no email for chat_id=%s", chat_id)
@@ -950,13 +1098,12 @@ async def charge_recurring_subscription(chat_id: int) -> bool:
         idempotence_key,
     )
 
-    # Ждём финальный статус (обычно succeeds сразу для автоплатежа)
     for _ in range(12):
         zakaz = Payment.find_one(payment.id)
         if zakaz.status == "succeeded":
             days = PLAN_DAYS.get(plan_key, 31)
             user_data.extend_subscription(chat_id, days=days)
-            update_payment_data(price, {31: "31d", 93: "93d", 365: "365d"}.get(days, "31d"))
+            update_payment_data(price, "31d")
             user_data.clear_renew_failure(chat_id)
             end = user_data.get_subscription_end(chat_id)
             end_s = end.strftime("%d.%m.%Y") if end else "—"
@@ -1214,21 +1361,70 @@ class AgreementManager:
             json.dump(agreements, file, indent=4)
 
     def user_has_agreed(self, user_id):
-        agreements = self.load_agreements()
-        return str(user_id) in agreements
+        return self.load_agreements().get(str(user_id)) is True
 
     def add_user_agreement(self, user_id):
         agreements = self.load_agreements()
         agreements[str(user_id)] = True
         self.save_agreements(agreements)
 
+PRIVACY_URL = os.getenv("PRIVACY_URL", "https://followthefrensy.ru/privacy").strip()
+OFERTA_URL = os.getenv("OFERTA_URL", "https://followthefrensy.ru/oferta").strip()
+
 agreement_manager = AgreementManager(data_file("user_agreements.json"))
 
-def get_agreement_keyboard():
+def _agreement_value(user_id: int):
+    return agreement_manager.load_agreements().get(str(user_id))
+
+
+def user_fully_agreed(user_id: int) -> bool:
+    return _agreement_value(user_id) is True
+
+
+def user_has_pd_consent(user_id: int) -> bool:
+    v = _agreement_value(user_id)
+    return v is True or v == "pd"
+
+
+def mark_pd_consent(user_id: int) -> None:
+    if user_fully_agreed(user_id):
+        return
+    data = agreement_manager.load_agreements()
+    data[str(user_id)] = "pd"
+    agreement_manager.save_agreements(data)
+
+
+def get_pd_keyboard():
     builder = InlineKeyboardBuilder()
-    builder.button(text="✅ Подтвердить", callback_data="agree")
+    builder.button(text="✅ Согласен на обработку ПД", callback_data="agree_pd")
     builder.button(text="❌ Отказаться", callback_data="disagree")
+    builder.adjust(1)
     return builder.as_markup()
+
+
+def get_oferta_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Принимаю оферту, мне 18+", callback_data="agree")
+    builder.button(text="❌ Отказаться", callback_data="disagree")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def get_agreement_keyboard():
+    return get_pd_keyboard()
+
+
+PD_GATE_TEXT = (
+    "Чтобы пользоваться ботом, нужно отдельное согласие на обработку персональных данных.\n\n"
+    f"Политика: {PRIVACY_URL}\n\n"
+    "Нажимая кнопку, вы соглашаетесь на обработку данных для оказания услуги "
+    "(мессенджеры, баланс, переписка; часть данных может уходить за рубеж — см. политику)."
+)
+OFERTA_GATE_TEXT = (
+    "Теперь примите публичную оферту. Это консультация / доступ к боту, "
+    "не медицина и не гарантия событий в жизни. Подтверждаете, что вам есть 18 лет.\n\n"
+    f"Оферта: {OFERTA_URL}"
+)
 
 #----------------------------------------------------------------------------------------------------------------------------------
 class AdminManager:
@@ -1519,7 +1715,9 @@ TAROT_SYSTEM_PROMPT = (
     "Не давай словарные энциклопедии по картам: каждая фраза должна связывать смысл карты "
     "с ситуацией из вопроса (отношения, решение, исход, совет по делу). "
     "Итоговый ответ должен быть ясным и прикладным: что происходит и что делать. "
-    "Строго следуй формату ответа из запроса пользователя."
+    "Строго следуй формату ответа из запроса пользователя. "
+    "В тексте вопроса контакты могут быть заменены на [телефон], [email], [ник], [id], [имя], [ФИО] — "
+    "отвечай по ситуации, не проси настоящие данные и не выдумывай их."
 )
 
 _TELEGRAM_CAPTION_LIMIT = 1000
@@ -1562,6 +1760,7 @@ def split_caption_and_body(card_label: str, interpretation: str, idx: int) -> tu
 
 async def get_tarot_reading(user_message: str) -> str:
     last_err = None
+    user_message = scrub_prompt_text(user_message)
     for attempt in range(3):
         try:
             response = client.chat.completions.create(
@@ -1823,6 +2022,10 @@ async def deliver_structured_spread(
         logging.warning("deliver_structured_spread: empty question for chat_id=%s", chat_id)
         question_text = "Что важно понять в моей текущей ситуации и какой следующий шаг?"
 
+    if LLM_PUBLIC_STUB and chat_id not in LLM_STUB_ALLOW_IDS:
+        await bot.send_message(chat_id, LLM_PUBLIC_STUB_TEXT)
+        return
+
     wait_msg = await bot.send_message(chat_id, "Происходит магия… Готовлю трактовку.")
 
     prompt = question_text
@@ -2009,6 +2212,8 @@ async def periodic_30day_refill():
                 is_subscribed = False
 
             if not is_subscribed:
+                if shared_wallet.peer("tg", chat_id):
+                    continue
                 # Не копим "долг" по пополнениям для неподписанных: сдвигаем точку отсчёта на сейчас
                 user_data.set_last_refill_at(chat_id, now)
                 # Напоминание максимум раз в день
@@ -2024,15 +2229,16 @@ async def periodic_30day_refill():
                         pass
                 continue
 
-            periods = delta_days // 30
-            if periods <= 0:
+            add_amount = shared_wallet.grant_periods(
+                "tg", chat_id, user_data.data.get(str(chat_id)), period_days=30, per_period=5
+            )
+            if add_amount <= 0:
                 continue
-
-            add_amount = 5 * periods
-            user_data.increment_user_questions(chat_id, add_amount)
-            # Сдвигаем дату на целые периоды, чтобы не начислять повторно
-            new_last = last_refill + timedelta(days=30 * periods)
-            user_data.set_last_refill_at(chat_id, new_last)
+            shared_wallet.mirror(
+                user_data.data.get(str(chat_id)),
+                shared_wallet.view("tg", chat_id, user_data.data.get(str(chat_id))),
+            )
+            user_data.save_data()
 
             try:
                 await bot.send_message(
@@ -2112,8 +2318,10 @@ async def send_welcome(message: types.Message, state: FSMContext):
                 pass
 
     if not agreement_manager.user_has_agreed(user_id):
-        await message.answer("Для предоставления доступа к работе с ботом вам необходимо ознакомиться с доп. соглашением.\n\nОно расположено по ссылке:\n"
-                             "https://telegra.ph/Polzovatelskoe-soglashenie-01-21-11",reply_markup=get_agreement_keyboard())
+        if not user_has_pd_consent(user_id):
+            await message.answer(PD_GATE_TEXT, reply_markup=get_pd_keyboard())
+        else:
+            await message.answer(OFERTA_GATE_TEXT, reply_markup=get_oferta_keyboard())
 
     else:
         await message.answer(
@@ -2127,11 +2335,21 @@ async def send_welcome(message: types.Message, state: FSMContext):
                                f"У вас доступно {user_data.get_user_questions(message.chat.id)} вопросов")
 
 
-@dp.callback_query(F.data.in_(["agree", "disagree"]))
+@dp.callback_query(F.data.in_(["agree", "disagree", "agree_pd"]))
 async def process_agreement(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
 
+    if callback.data == "agree_pd":
+        mark_pd_consent(user_id)
+        await callback.message.answer(OFERTA_GATE_TEXT, reply_markup=get_oferta_keyboard())
+        await callback.answer()
+        return
+
     if callback.data == "agree":
+        if not user_has_pd_consent(user_id):
+            await callback.message.answer(PD_GATE_TEXT, reply_markup=get_pd_keyboard())
+            await callback.answer()
+            return
         agreement_manager.add_user_agreement(user_id)
         await callback.message.answer("Спасибо за согласие! Теперь вы можете продолжить использование бота.")
         await callback.message.answer(
@@ -2550,20 +2768,53 @@ async def process_question(message: types.Message, state: FSMContext):
 #-----------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 async def send_consultation_invite(chat_id: int) -> None:
+    from bot_core import crypto_pay
+    from bot_core.crypto_services import SERVICE_PRODUCTS
+
     consult_kb = InlineKeyboardBuilder()
+    caption = CONSULTATION_MESSAGE
+    if crypto_pay.is_configured():
+        caption = (
+            "Индивидуальный разбор ✨\n\n"
+            "Таро, астрология, дизайн человека — персонально под вашу ситуацию.\n\n"
+            "Оплата криптой прямо здесь:\n"
+            "• один расклад — 1 111 ₽\n"
+            "• видеоразбор в TikTok — 3 333 ₽\n"
+            "• консультация — 11 111 ₽\n\n"
+            "После оплаты Роксана видит заказ и пишет вам.\n"
+            f"Можно сразу написать: {CONSULTATION_URL}"
+        )
+        consult_kb.row(
+            types.InlineKeyboardButton(
+                text=SERVICE_PRODUCTS["svc_spread"]["label"],
+                callback_data="svc_spread",
+            )
+        )
+        consult_kb.row(
+            types.InlineKeyboardButton(
+                text=SERVICE_PRODUCTS["svc_tiktok"]["label"],
+                callback_data="svc_tiktok",
+            )
+        )
+        consult_kb.row(
+            types.InlineKeyboardButton(
+                text=SERVICE_PRODUCTS["svc_consult"]["label"],
+                callback_data="svc_consult",
+            )
+        )
     consult_kb.row(
-        types.InlineKeyboardButton(text="💬 Записаться на консультацию", url=CONSULTATION_URL)
+        types.InlineKeyboardButton(text="💬 Написать Роксане", url=CONSULTATION_URL)
     )
     markup = consult_kb.as_markup()
     if os.path.isfile(CONSULTATION_VIDEO_PATH):
         await bot.send_video(
             chat_id,
             FSInputFile(CONSULTATION_VIDEO_PATH),
-            caption=CONSULTATION_MESSAGE,
+            caption=caption,
             reply_markup=markup,
         )
     else:
-        await bot.send_message(chat_id, CONSULTATION_MESSAGE, reply_markup=markup)
+        await bot.send_message(chat_id, caption, reply_markup=markup)
     await bot.send_message(
         chat_id,
         "◀️ В главное меню — кнопка «Назад» ниже.",
@@ -2650,16 +2901,42 @@ async def my_balance(message: types.Message):
         status_line = "Подписка не активна."
 
     await message.answer(
-        f"Ваш баланс: {questions} вопросов.\n{status_line}\n{auto_renew_status_line(chat_id)}",
+        f"Ваш баланс: {questions} вопросов.\n{status_line}\n{auto_renew_status_line(chat_id)}"
+        + shared_wallet.hint("tg", chat_id, user_data.data.get(str(chat_id))),
         reply_markup=back_kb(),
     )
+
+
+@dp.message(Command("link"))
+async def link_shared_balance(message: types.Message, command: CommandObject):
+    chat_id = message.chat.id
+    user_data.add_user(chat_id)
+    code = (command.args or "").strip()
+    if not code:
+        issued = shared_wallet.issue_code("tg", chat_id, user_data.data.get(str(chat_id)))
+        await message.answer(
+            "Чтобы баланс был один и в MAX, отправьте боту в MAX:\n"
+            f"/link {issued}",
+            reply_markup=main_kb(chat_id),
+        )
+        return
+    ok, text = shared_wallet.redeem("tg", chat_id, code, user_data.data.get(str(chat_id)))
+    if ok:
+        shared_wallet.mirror(
+            user_data.data.get(str(chat_id)),
+            shared_wallet.view("tg", chat_id, user_data.data.get(str(chat_id))),
+        )
+        user_data.save_data()
+    await message.answer(text, reply_markup=main_kb(chat_id))
 
 
 @dp.message(Command('agreement'))
 async def show_agreement(message: types.Message):
     logger.log_command(message.chat.id, message.text)
-    await message.answer("Ознакомиться с доп. соглашением можно по ссылке:\n"
-                         "https://telegra.ph/Polzovatelskoe-soglashenie-01-21-11")
+    await message.answer(
+        f"Политика персональных данных:\n{PRIVACY_URL}\n\n"
+        f"Публичная оферта:\n{OFERTA_URL}"
+    )
 
 
 
@@ -2706,8 +2983,8 @@ async def email_box(message: Message, state: FSMContext):
         if not user_has_active_subscription(chat_id):
             payment_nurture.set_intent(chat_id)
         await message.answer(
-            "Email установлен. Выберите подписку.\n\n"
-            "Безлимитные тарифы включают автопродление (карту можно отвязать в меню)."
+            "Email установлен. Выберите тариф — везде месяц безлимита.\n\n"
+            "111 / 555 / 999 ₽. Автопродление можно отключить в меню."
             + REFERRAL_HINT,
             reply_markup=sub(chat_id),
         )
@@ -2722,16 +2999,10 @@ async def email_box(message: Message, state: FSMContext):
 
 
 def sub(chat_id: Optional[int] = None):
-    sub1 = types.InlineKeyboardButton(text='10 запросов - 169 руб.', callback_data="sub_10_169")
-    sub3 = types.InlineKeyboardButton(text='Месяц (безлимит) - 359 руб.', callback_data="sub_7d_399")
-    sub4 = types.InlineKeyboardButton(text='3 Месяца (безлимит) - 999 руб.', callback_data="sub_14d_499")
-    sub5 = types.InlineKeyboardButton(text='Год (безлимит) - 2999 руб.', callback_data="sub_30d_699")
-
     markup = InlineKeyboardBuilder()
-    markup.row(sub1)
-    markup.row(sub3)
-    markup.row(sub4)
-    markup.row(sub5)
+    markup.row(types.InlineKeyboardButton(text="Месяц безлимит — 111 ₽", callback_data="sub_m_111"))
+    markup.row(types.InlineKeyboardButton(text="Месяц безлимит — 555 ₽", callback_data="sub_m_555"))
+    markup.row(types.InlineKeyboardButton(text="Месяц безлимит — 999 ₽", callback_data="sub_m_999"))
     if chat_id is not None and user_data.is_auto_renew_enabled(chat_id):
         markup.row(
             types.InlineKeyboardButton(
@@ -2744,15 +3015,245 @@ def sub(chat_id: Optional[int] = None):
 
     return markup.as_markup()
 
+
+async def _start_robokassa_checkout(
+    chat_id: int,
+    plan_key: str,
+    selected_price: int,
+    email: str,
+) -> None:
+    from bot_core import robokassa, robokassa_store
+
+    if not robokassa.is_configured():
+        raise ValueError("Robokassa не настроена (LOGIN/PASSWORD1/PASSWORD2)")
+
+    order_manager.increment_order_number()
+    inv_id = int(order_manager.get_order_number())
+    amount_rub = int(selected_price) / 100.0
+    shp = {"chat_id": str(chat_id), "plan": plan_key}
+    use_recurring = robokassa.recurring_enabled()
+    link = robokassa.build_payment_link(
+        inv_id=inv_id,
+        amount_rub=amount_rub,
+        description=PLAN_LABELS.get(plan_key, "Подписка"),
+        shp=shp,
+        email=email,
+        recurring=use_recurring,
+    )
+    robokassa_store.put_pending(
+        inv_id,
+        chat_id=chat_id,
+        plan_key=plan_key,
+        amount_kopecks=int(selected_price),
+        kind="parent",
+    )
+    payment_nurture.set_checkout(
+        chat_id,
+        payment_id=str(inv_id),
+        confirmation_url=link.url,
+        plan_key=plan_key,
+        selected_price=selected_price,
+    )
+
+    pay_kb = InlineKeyboardBuilder()
+    pay_kb.row(types.InlineKeyboardButton(text="💳 Оплатить сейчас", url=link.url))
+    pay_kb.row(types.InlineKeyboardButton(text="👥 Пригласить друга (+5)", callback_data="nurture_referral"))
+    pay_kb.row(consultation_inline_button())
+    pay_kb.row(types.InlineKeyboardButton(text=BACK_BUTTON_TEXT, callback_data="back_to_main"))
+    if use_recurring:
+        renew_note = (
+            "\n\nКарта сохранится для автопродления. "
+            "Отменить — в меню «💳 Оформить подписку»."
+        )
+    else:
+        renew_note = (
+            "\n\nСейчас это разовая оплата на месяц "
+            "(автопродление включим после одобрения Robokassa)."
+        )
+    await bot.send_message(
+        chat_id,
+        text=(
+            f"Оплата: {PLAN_LABELS.get(plan_key, 'Подписка')}\n\n"
+            "Нажмите кнопку ниже — откроется безопасная страница Robokassa.\n"
+            "После оплаты безлимит на месяц включится автоматически."
+            + renew_note
+            + REFERRAL_HINT
+        ),
+        reply_markup=pay_kb.as_markup(),
+    )
+    asyncio.create_task(check_robokassa_payment_status(inv_id, chat_id, selected_price, plan_key=plan_key))
+
+
+async def _start_crypto_checkout(
+    chat_id: int,
+    plan_key: str,
+    selected_price: int,
+    *,
+    kind: str = "subscription",
+) -> None:
+    from bot_core import crypto_pay, crypto_pay_store
+    from bot_core.crypto_services import SERVICE_PRODUCTS
+
+    product = SERVICE_PRODUCTS.get(plan_key) or {}
+    label = str(product.get("label") or PLAN_LABELS.get(plan_key, "Оплата"))
+    amount_rub = f"{int(selected_price) / 100:.2f}"
+    payload = json.dumps(
+        {"chat_id": int(chat_id), "plan": plan_key, "kind": kind},
+        separators=(",", ":"),
+    )
+    bot_url = (os.getenv("LANDING_BOT_URL") or "").strip()
+    try:
+        invoice = crypto_pay.create_invoice(
+            amount_rub=amount_rub,
+            description=label,
+            payload=payload,
+            paid_btn_url=bot_url,
+        )
+    except crypto_pay.CryptoPayError as exc:
+        if bot_url and "PAID_BTN" in str(exc).upper():
+            invoice = crypto_pay.create_invoice(
+                amount_rub=amount_rub,
+                description=label,
+                payload=payload,
+            )
+        else:
+            raise
+    invoice_id = int(invoice["invoice_id"])
+    link = crypto_pay.pay_url(invoice)
+    crypto_pay_store.put_pending(
+        invoice_id,
+        chat_id=chat_id,
+        plan_key=plan_key,
+        amount_kopecks=int(selected_price),
+        payload=payload,
+        kind=kind,
+    )
+    if kind == "subscription":
+        payment_nurture.set_checkout(
+            chat_id,
+            payment_id=f"crypto:{invoice_id}",
+            confirmation_url=link,
+            plan_key=plan_key,
+            selected_price=selected_price,
+        )
+        body = (
+            f"Оплата: {label}\n\n"
+            "Нажмите кнопку — откроется счёт Crypto Bot. "
+            "Можно оплатить USDT, TON и другими монетами.\n"
+            "После оплаты безлимит на месяц включится сам. "
+            "Автопродление на крипте не подключается."
+            + REFERRAL_HINT
+        )
+    else:
+        body = (
+            f"Оплата: {label}\n\n"
+            "Нажмите кнопку — откроется счёт Crypto Bot. "
+            "Можно оплатить USDT, TON и другими монетами.\n"
+            "После оплаты заказ придёт Роксане, она напишет вам. "
+            "Безлимит бота эта оплата не включает."
+        )
+    pay_kb = InlineKeyboardBuilder()
+    pay_kb.row(types.InlineKeyboardButton(text="🪙 Оплатить криптой", url=link))
+    if kind == "subscription":
+        pay_kb.row(types.InlineKeyboardButton(text="👥 Пригласить друга (+5)", callback_data="nurture_referral"))
+        pay_kb.row(consultation_inline_button())
+    pay_kb.row(types.InlineKeyboardButton(text=BACK_BUTTON_TEXT, callback_data="back_to_main"))
+    await bot.send_message(chat_id, text=body, reply_markup=pay_kb.as_markup())
+    asyncio.create_task(
+        check_crypto_payment_status(invoice_id, chat_id, selected_price, plan_key=plan_key)
+    )
+
+
+async def _start_card_checkout(
+    chat_id: int,
+    plan_key: str,
+    selected_price: int,
+    email: str,
+) -> None:
+    if PAYMENT_PROVIDER == "robokassa":
+        await _start_robokassa_checkout(chat_id, plan_key, selected_price, email)
+        return
+
+    configure_yookassa()
+    order_manager.increment_order_number()
+    amount_value = f"{int(selected_price / 100)}.00"
+    save_method = plan_key in RECURRING_PLAN_KEYS
+    payment_payload = {
+        "amount": {"value": amount_value, "currency": "RUB"},
+        "capture": True,
+        "confirmation": {"type": "redirect", "return_url": BOT_RETURN_URL},
+        "description": PLAN_LABELS.get(plan_key, "Оплата подписки"),
+        "metadata": {
+            "order_id": f"{order_manager.get_order_number()}",
+            "chat_id": str(chat_id),
+            "plan_key": plan_key,
+            "selected_price": str(selected_price),
+        },
+        "receipt": {
+            "customer": {"email": f"{email}"},
+            "items": [
+                {
+                    "description": PLAN_LABELS.get(plan_key, "Подписка")[:128],
+                    "quantity": 1,
+                    "amount": {"value": amount_value, "currency": "RUB"},
+                    "vat_code": 1,
+                }
+            ],
+        },
+    }
+    if save_method:
+        payment_payload["save_payment_method"] = True
+
+    idempotence_key = str(uuid.uuid4())
+    payment = Payment.create(payment_payload, idempotence_key)
+    confirmation_url = payment.confirmation.confirmation_url
+    payment_id = payment.id
+    payment_nurture.set_checkout(
+        chat_id,
+        payment_id=payment_id,
+        confirmation_url=confirmation_url,
+        plan_key=plan_key,
+        selected_price=selected_price,
+    )
+    renew_hint = ""
+    if save_method:
+        renew_hint = (
+            "\n\nПосле оплаты карта сохранится для автопродления этого тарифа. "
+            "Отменить автопродление можно в меню «💳 Оформить подписку»."
+        )
+    pay_kb = InlineKeyboardBuilder()
+    pay_kb.row(types.InlineKeyboardButton(text="💳 Оплатить сейчас", url=confirmation_url))
+    pay_kb.row(types.InlineKeyboardButton(text="👥 Пригласить друга (+5)", callback_data="nurture_referral"))
+    pay_kb.row(consultation_inline_button())
+    pay_kb.row(types.InlineKeyboardButton(text=BACK_BUTTON_TEXT, callback_data="back_to_main"))
+    await bot.send_message(
+        chat_id=chat_id,
+        text=(
+            f"Оплата: {PLAN_LABELS.get(plan_key, 'Подписка')}\n\n"
+            + "Нажмите кнопку ниже — откроется безопасная страница оплаты."
+            + renew_hint
+            + REFERRAL_HINT
+        ),
+        reply_markup=pay_kb.as_markup(),
+    )
+    asyncio.create_task(
+        check_payment_status(payment_id, chat_id, selected_price, plan_key=plan_key)
+    )
+
+
 @dp.callback_query(lambda call: call.data.startswith("sub_"))
 async def submonth(call: CallbackQuery):
     logger.log_command(call.message.chat.id, call.message.text)
     message = call.message
     chat_id = message.chat.id
-    prices = PLAN_PRICE_KOPECKS
-    selected_price = prices.get(call.data, 15000)
     plan_key = call.data
+    selected_price = PLAN_PRICE_KOPECKS.get(plan_key)
     await call.message.delete()
+
+    if selected_price is None or plan_key not in PLAN_LABELS:
+        await bot.send_message(chat_id, "Неизвестный тариф.", reply_markup=back_kb())
+        await call.answer()
+        return
 
     email = user_data.get_user_email(chat_id)
     if not email:
@@ -2764,94 +3265,98 @@ async def submonth(call: CallbackQuery):
         await call.answer()
         return
 
-    try:
-        configure_yookassa()
-    except (ValueError, TypeError) as e:
-        await bot.send_message(chat_id, f"Оплата временно недоступна: {e}", reply_markup=back_kb())
+    from bot_core import crypto_pay
+
+    if crypto_pay.is_configured():
+        choice = InlineKeyboardBuilder()
+        choice.row(types.InlineKeyboardButton(text="💳 Картой", callback_data=f"paycard_{plan_key}"))
+        choice.row(types.InlineKeyboardButton(text="🪙 Криптой", callback_data=f"paycrypto_{plan_key}"))
+        choice.row(consultation_inline_button())
+        choice.row(types.InlineKeyboardButton(text=BACK_BUTTON_TEXT, callback_data="back_to_main"))
+        await bot.send_message(
+            chat_id,
+            f"Оплата: {PLAN_LABELS.get(plan_key, 'Подписка')}\n\n"
+            "Картой — как сейчас, через платёжную страницу.\n"
+            "Криптой — разовая оплата на месяц (USDT, TON и другие). "
+            "Автосписание на крипте не включается.",
+            reply_markup=choice.as_markup(),
+        )
         await call.answer()
         return
 
-    order_manager.increment_order_number()
+    try:
+        await _start_card_checkout(chat_id, plan_key, selected_price, email)
+    except Exception as e:
+        await bot.send_message(chat_id, f"Оплата временно недоступна: {e}", reply_markup=back_kb())
+    await call.answer()
 
-    amount_value = f"{int(selected_price / 100)}.00"
-    save_method = plan_key in RECURRING_PLAN_KEYS
-    payment_payload = {
-        "amount": {
-            "value": amount_value,
-            "currency": "RUB"
-        },
-        "capture": True,
-        "confirmation": {
-            "type": "redirect",
-            "return_url": BOT_RETURN_URL
-        },
-        "description": PLAN_LABELS.get(plan_key, "Оплата подписки"),
-        "metadata": {
-            "order_id": f"{order_manager.get_order_number()}",
-            "chat_id": str(chat_id),
-            "plan_key": plan_key,
-            "selected_price": str(selected_price),
-        },
-        "receipt": {
-            "customer": {
-                "email": f"{email}"
-            },
-            "items": [
-                {
-                    "description": PLAN_LABELS.get(plan_key, "Подписка")[:128],
-                    "quantity": 1,
-                    "amount": {
-                        "value": amount_value,
-                        "currency": "RUB"
-                    },
-                    "vat_code": 1
-                }
-            ]
-        }
-    }
-    if save_method:
-        payment_payload["save_payment_method"] = True
 
-    idempotence_key = str(uuid.uuid4())
-    payment = Payment.create(payment_payload, idempotence_key)
-
-    confirmation_url = payment.confirmation.confirmation_url
-    payment_id = payment.id
-
-    payment_nurture.set_checkout(
-        chat_id,
-        payment_id=payment_id,
-        confirmation_url=confirmation_url,
-        plan_key=plan_key,
-        selected_price=selected_price,
-    )
-
-    renew_hint = ""
-    if save_method:
-        renew_hint = (
-            "\n\nПосле оплаты карта сохранится для автопродления этого тарифа. "
-            "Отменить автопродление можно в меню «💳 Оформить подписку»."
+@dp.callback_query(lambda call: (call.data or "").startswith("paycard_"))
+async def pay_card_chosen(call: CallbackQuery):
+    await call.answer()
+    chat_id = call.message.chat.id
+    plan_key = call.data[len("paycard_") :]
+    selected_price = PLAN_PRICE_KOPECKS.get(plan_key)
+    if selected_price is None or plan_key not in PLAN_LABELS:
+        await bot.send_message(chat_id, "Неизвестный тариф.", reply_markup=back_kb())
+        return
+    email = user_data.get_user_email(chat_id)
+    if not email:
+        await bot.send_message(
+            chat_id,
+            "Для оплаты сначала укажите email через «💳 Оформить подписку».",
+            reply_markup=back_kb(),
         )
+        return
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+    try:
+        await _start_card_checkout(chat_id, plan_key, selected_price, email)
+    except Exception as e:
+        await bot.send_message(chat_id, f"Оплата временно недоступна: {e}", reply_markup=back_kb())
 
-    pay_kb = InlineKeyboardBuilder()
-    pay_kb.row(types.InlineKeyboardButton(text="💳 Оплатить сейчас", url=confirmation_url))
-    pay_kb.row(types.InlineKeyboardButton(text="👥 Пригласить друга (+5)", callback_data="nurture_referral"))
-    pay_kb.row(consultation_inline_button())
-    pay_kb.row(types.InlineKeyboardButton(text=BACK_BUTTON_TEXT, callback_data="back_to_main"))
-    await bot.send_message(
-        chat_id=message.chat.id,
-        text=(
-            f"Оплата: {PLAN_LABELS.get(plan_key, 'Подписка')}\n\n"
-            + "Нажмите кнопку ниже — откроется безопасная страница YooKassa."
-            + renew_hint
-            + REFERRAL_HINT
-        ),
-        reply_markup=pay_kb.as_markup(),
-    )
 
-    asyncio.create_task(
-        check_payment_status(payment_id, message.chat.id, selected_price, plan_key=plan_key)
-    )
+@dp.callback_query(lambda call: (call.data or "") in {"svc_spread", "svc_tiktok", "svc_consult"})
+async def pay_service_crypto(call: CallbackQuery):
+    await call.answer()
+    from bot_core.crypto_services import SERVICE_PRODUCTS
+
+    product = SERVICE_PRODUCTS.get(call.data or "")
+    if not product:
+        return
+    chat_id = call.message.chat.id
+    try:
+        await _start_crypto_checkout(
+            chat_id,
+            call.data,
+            int(product["kopecks"]),
+            kind="service",
+        )
+    except Exception as e:
+        logging.exception("service crypto checkout failed chat_id=%s", chat_id)
+        await bot.send_message(chat_id, f"Оплата криптой временно недоступна: {e}", reply_markup=back_kb())
+
+
+@dp.callback_query(lambda call: (call.data or "").startswith("paycrypto_"))
+async def pay_crypto_chosen(call: CallbackQuery):
+    await call.answer()
+    chat_id = call.message.chat.id
+    plan_key = call.data[len("paycrypto_") :]
+    selected_price = PLAN_PRICE_KOPECKS.get(plan_key)
+    if selected_price is None or plan_key not in PLAN_LABELS:
+        await bot.send_message(chat_id, "Неизвестный тариф.", reply_markup=back_kb())
+        return
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+    try:
+        await _start_crypto_checkout(chat_id, plan_key, selected_price)
+    except Exception as e:
+        logging.exception("crypto checkout failed chat_id=%s", chat_id)
+        await bot.send_message(chat_id, f"Оплата криптой временно недоступна: {e}", reply_markup=back_kb())
 
 
 @dp.callback_query(F.data == "cancel_auto_renew")
@@ -2900,6 +3405,86 @@ async def nurture_referral(call: CallbackQuery):
     await send_referral_info(call.message.chat.id)
 
 
+async def check_robokassa_payment_status(
+    inv_id: int,
+    chat_id: int,
+    selected_price: int,
+    plan_key: Optional[str] = None,
+) -> None:
+    """Backup poll: ResultURL is primary; here we detect grant and avoid duplicate notify."""
+    from bot_core import robokassa_store
+
+    for _ in range(60):
+        rec = robokassa_store.get_invoice(inv_id)
+        if rec and rec.get("status") == "paid":
+            # ResultURL already granted + usually notified
+            user_data._pull_wallet(chat_id)
+            if not rec.get("notify_sent"):
+                end = user_data.get_subscription_end(chat_id)
+                end_s = end.strftime("%d.%m.%Y") if end else "—"
+                renew_note = (
+                    "\n\nАвтопродление включено. Отменить — «💳 Оформить подписку» → "
+                    "«Отменить автопродление»."
+                )
+                try:
+                    await bot.send_message(
+                        chat_id,
+                        f"Вам выдана подписка до {end_s}!" + renew_note + REFERRAL_HINT,
+                        reply_markup=main_kb(chat_id),
+                    )
+                    robokassa_store.mark_notify_sent(inv_id)
+                except Exception:
+                    pass
+            return
+        await asyncio.sleep(10)
+
+    await bot.send_message(
+        chat_id,
+        "Оплата пока не поступила. Если вы уже оплатили — подписка активируется автоматически "
+        "после уведомления от Robokassa (обычно до минуты).\n"
+        "Или нажмите «💳 Оформить подписку» и откройте ссылку снова."
+        + REFERRAL_HINT,
+    )
+
+
+async def check_crypto_payment_status(
+    invoice_id: int,
+    chat_id: int,
+    selected_price: int,
+    plan_key: Optional[str] = None,
+) -> None:
+    """Backup poll. Webhook is primary; this catches the payment if the hook is late."""
+    from bot_core import crypto_pay_store
+    from bot_core.crypto_pay_fulfill import fulfill_if_paid
+
+    del selected_price, plan_key
+    for _ in range(60):
+        rec = crypto_pay_store.get_invoice(invoice_id)
+        if rec and rec.get("fulfilled"):
+            payment_nurture.mark_completed(chat_id)
+            return
+        try:
+            result = await asyncio.to_thread(fulfill_if_paid, invoice_id)
+        except Exception:
+            logging.exception("crypto poll failed invoice_id=%s", invoice_id)
+            result = {}
+        if result.get("ok"):
+            payment_nurture.mark_completed(chat_id)
+            return
+        await asyncio.sleep(10)
+
+    rec = crypto_pay_store.get_invoice(invoice_id)
+    if rec and rec.get("fulfilled"):
+        return
+    await bot.send_message(
+        chat_id,
+        "Оплата криптой пока не поступила. Если вы уже оплатили — подписка включится "
+        "сразу после подтверждения Crypto Bot.\n"
+        "Или нажмите «💳 Оформить подписку» и откройте ссылку снова."
+        + REFERRAL_HINT,
+    )
+
+
 async def check_payment_status(payment_id, chat_id, selected_price, plan_key: Optional[str] = None):
     configure_yookassa()
     for _ in range(60):
@@ -2919,8 +3504,7 @@ async def check_payment_status(payment_id, chat_id, selected_price, plan_key: Op
                 elif plan_key in RECURRING_PLAN_KEYS:
                     renew_note = (
                         "\n\nПодписка выдана. Автопродление не удалось включить "
-                        "(возможно, в ЮKassa не включены автоплатежи или способ оплаты "
-                        "не поддерживает сохранение)."
+                        "(способ оплаты не сохранился)."
                     )
                 await bot.send_message(
                     chat_id,

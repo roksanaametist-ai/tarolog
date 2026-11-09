@@ -1,23 +1,70 @@
 # IDE и окружение
 .idea/
+.cursor/*
+!.cursor/hooks.json
+!.cursor/hooks/
+!.cursor/hooks/**
+!.cursor/rules/
+!.cursor/rules/**
+!.cursor/skills/
+!.cursor/skills/**
+!.cursor/commands/
+!.cursor/commands/**
+!.cursor/agents/
+!.cursor/agents/**
 venv/
 __pycache__/
 *.pyc
 
 # Данные пользователей / логи / временные JSON
 user_data.json
+data_max/
+*_max.json
 status_data.json
 order_number.json
 payment_data.json
 payment_nurture.json
+crypto_invoices.json
 logs.json
 chat_data.json
 user_agreements.json
 used_promocodes.json
+tomorrow_card.json
+reading_history.json
+user_questions.json
+consultation_leads.json
+grant_state.json
+admins.json
+
+# Выгрузки / базы контактов (PII)
+users.txt
+базы/
 
 # Секреты и переменные окружения
 .env
 
+# Кэш перевёрнутых карт (генерируется на лету)
+reversed_cards/
+static/reversed_cache/
+
 # Лиды с лендинга
 landing/leads.json
 leads.json
+
+# Временные артефакты дизайна / отладки
+_tmp_*
+_sirclive_*
+static/_tmp_*
+static/_tmp_*/
+static/card_back_SOURCE*
+*.tmp
+webapp/logo_anim/
+
+# Не отправлять на GitHub: личные данные, пароли, тяжёлые видео
+_prod_work/
+_prod_snip/
+_folai/*.mp4
+landing/_rkn_out/
+scripts/_robokassa_b64.txt
+scripts/_vnc_receipt_short.txt
+scripts/_patch_robokassa_env.py

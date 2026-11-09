@@ -1,0 +1,350 @@
+Follow the Frensy / TarGPT3 — картинки для Клода
+Корень: C:\Users\roxan\Projects\TarGPT3
+
+Сейчас открыта ветка main. Файлы с пометкой DISK лежат в папке и открываются сразу.
+Файлы с пометкой BRANCH есть только в ветке feature/reading-topics-day (коммит 8628c2b, 2026-10-06).
+В main их на диске нет. Чтобы достать: git checkout feature/reading-topics-day -- <путь>
+
+Дубли не расписаны построчно:
+- webapp/cards/static/fx и webapp/yesno/static/fx — копии облаков и звёзд из landing/static/images/fx
+- webapp/cards/static/txt и webapp/yesno/static/txt — копии static/txt
+- карты Таро: static/card1.jpg … static/card78.jpg и static/card_back.jpg
+  те же файлы повторены в webapp/cards и webapp/yesno
+
+============================================================
+РАКУШКИ
+============================================================
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\shell-closed.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\shell-open.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\shell-opening.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\shell-final.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\shell-gem.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\shell-hero-static.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\shell-cycle-end.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\shell-cycle-alpha.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\shell.mp4
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\shell.webm
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\shell-close.mp4
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\shell-close.webm
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\shell-cycle.mp4
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\shell-cycle.webm
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\shell-intro.mp4
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\src\shell.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\static\shell.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\static\shell.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\animated\shell_sparkle.tgs
+
+============================================================
+ОБЛАКА
+============================================================
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cloud-1.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cloud-2.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cloud-3.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cloud-4.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cloud-5.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cloud-6.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cloud-7.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cloud-8.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\omen-cloud.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\03-cloud-cherub.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\11-jelly-cloud.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\12-cloud.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_card_back_clouds_preview.jpg
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_card_back_clouds_compare.jpg
+Копии облаков 1, 2, 3, 5:
+BRANCH  C:\Users\roxan\Projects\TarGPT3\webapp\cards\static\fx\
+BRANCH  C:\Users\roxan\Projects\TarGPT3\webapp\yesno\static\fx\
+
+============================================================
+ЗВЁЗДЫ И ВОЛНЫ
+============================================================
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\star-1.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\star-2.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\star-3.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\star-4.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\star-5.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\star-6.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\star-7.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\star-8.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\star-9.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\star-10.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\star-sm.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\star-lg.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\stars-atlas.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\wave-1.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\wave-2.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\wave-3.webp
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\wave-jelly.mp4
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\wave-jelly.webm
+Те же star-1…10, star-sm, star-lg скопированы в webapp/cards/static/fx и webapp/yesno/static/fx
+
+============================================================
+МЕДУЗЫ, КИТ, ФОН
+============================================================
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\01-jellyfish.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\02-morph.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\10-jellyfish.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\16-astro-aside.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\17-astro.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\18-whale-enter.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\19-whale-pass.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\omen-jelly.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\bg.mp4
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\bg.mp4
+BRANCH  C:\Users\roxan\Projects\TarGPT3\webapp\cards\bg.mp4
+BRANCH  C:\Users\roxan\Projects\TarGPT3\webapp\cards\static\bg.mp4
+BRANCH  C:\Users\roxan\Projects\TarGPT3\webapp\yesno\bg.mp4
+BRANCH  C:\Users\roxan\Projects\TarGPT3\webapp\yesno\static\bg.mp4
+
+============================================================
+СТИКЕРЫ TELEGRAM (эмодзи — подпись к файлу)
+============================================================
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\README.md
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\pack-preview.jpg
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\static\wave.webp     эмодзи 👋
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\static\love.webp     эмодзи ❤️
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\static\think.webp    эмодзи 🤔
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\static\yes.webp      эмодзи 👍
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\static\no.webp       эмодзи 👎
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\static\wow.webp      эмодзи 😮
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\static\cry.webp      эмодзи 😢
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\static\shell.webp    эмодзи 🐚
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\static\card.webp     эмодзи 🃏
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\static\laugh.webp    эмодзи 😂
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\static\sleep.webp    эмодзи 😴
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\static\kiss.webp     эмодзи 😘
+Рядом с каждым .webp лежит .png в static\ и исходник с зелёным фоном в src\
+Анимации:
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\animated\cherubs\wave.gif
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\animated\cherubs\wave.webm
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\animated\cherubs\think.gif
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\animated\cherubs\think.webm
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\animated\cherubs\love.gif
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\animated\cherubs\love.webm
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\animated\heart_pulse.tgs
+BRANCH  C:\Users\roxan\Projects\TarGPT3\stickers\telegram\animated\shell_sparkle.tgs
+Референсы тех же стикеров:
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_run_refs\wave.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_run_refs\laugh.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_run_refs\think.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_run_refs\wow.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_run_refs\kiss.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_run_refs\yes.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_run_refs\no.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_run_refs\card.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_run_sticker_wave.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_run_sticker_laugh.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_run_sticker_think.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_run_sticker_wow.png
+
+============================================================
+ХЕРУВИМЫ — САЙТ, НЕ ИГРА
+============================================================
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\angels.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\angels-only.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\angels-center.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\angels-aura.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\angels-seraph.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\angels-wings-chrome.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\angel-left.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\angel-right.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\angel-top.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\angel-bottom.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\omen-cherub-in.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\omen-cherub-out.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\topic-angel-a.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\topic-angel-b.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\topic-angel-c.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\topic-angel-d.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\topic-angel-e.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\topic-angel-f.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\topic-angel-g.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\04-cherub-flight.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\05-cherub-out-profile.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\06-cherub-in-profile.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\13-cherub-out.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\14-cherub-in.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\15-cherub-astro.png
+Свиток, пара херувимов:
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-hold-L1.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-hold-L2.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-hold-L3.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-hold-L4.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-hold-R1.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-hold-R2.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-hold-R3.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-hold-R4.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-scroll-L1.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-scroll-L2.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-scroll-L3.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-scroll-L4.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-scroll-R1.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-scroll-R2.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-scroll-R3.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-pair-scroll-fly-1.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-pair-scroll-fly-1-tab.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-pair-scroll-fly-2.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-pair-scroll-fly-3.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-pair-scroll-fly-4.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\cherub-pair-scroll-stand.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\scroll-tassel.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\topics\pair-tab-still.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\topics\pair-tab-wings-down.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\topics\pair-tab-wings-mid-down.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\topics\pair-tab-wings-mid-up.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\topics\pair-tab-wings-up.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_topics_closed.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_topics_check\open.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_topics_check\closed.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_topics_check\scroll-preview.jpg
+Те же свитки продублированы в _run_refs\ (cherub-scroll-*, cherub-pair-scroll-*, pair-scroll-*)
+
+============================================================
+ДЕМОНЫ
+============================================================
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\20-demon-idle.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\21-demon-graffiti.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\omen-20-demon-idle.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\fx\omen-21-demon-graffiti.png
+
+============================================================
+ИГРА /run — НА ДИСКЕ СЕЙЧАС
+============================================================
+Промпты клипов:
+DISK    C:\Users\roxan\Projects\TarGPT3\_folai\run_prompts.json
+Видео:
+DISK    C:\Users\roxan\Projects\TarGPT3\_folai\run-clip-angel-fly.mp4
+DISK    C:\Users\roxan\Projects\TarGPT3\_folai\run-clip-cherub-fly.mp4
+DISK    C:\Users\roxan\Projects\TarGPT3\_folai\run-clip-cherub-stand.mp4
+DISK    C:\Users\roxan\Projects\TarGPT3\_folai\run-clip-cherub-back.mp4
+DISK    C:\Users\roxan\Projects\TarGPT3\_folai\run-clip-imp-jump-a.mp4
+DISK    C:\Users\roxan\Projects\TarGPT3\_folai\run-clip-imp-jump-b.mp4
+DISK    C:\Users\roxan\Projects\TarGPT3\_folai\run-clip-imp-jump-c.mp4
+DISK    C:\Users\roxan\Projects\TarGPT3\_folai\run-clip-demon-stab.mp4
+Спрайтшиты игры (4 кадра):
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\sheets\angel-fly.png
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\sheets\cherub-fly.png
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\sheets\cherub-stand.png
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\sheets\cherub-back.png
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\sheets\cherub-hover.png
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\sheets\imp-jump-a.png
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\sheets\imp-jump-b.png
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\sheets\imp-jump-c.png
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\sheets\demon-stab.png
+Кадры и листы:
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\angel-fly.png
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\cherub-stand.png
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\imp-stand.png
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\demon-trident.png
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\run-sheet-cherubs-trio.png
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\run-sheet-imps-trio.png
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\obstacles\cherub-fly-heart.png
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\obstacles\cherub-stand-heart.png
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\obstacles\cherub-back-heart.png
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\obstacles\imp-a-mid.png
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\obstacles\imp-b-mid.png
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\run\obstacles\imp-c-mid.png
+Исходные кадры клипов — только в ветке, папка _folai\run\ :
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\01-angel-low.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\02-angel-high.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\03-imp-a-crouch.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\04-imp-a-peak.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\05-imp-b-coil.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\06-imp-b-peak.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\07-imp-c-prep.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\08-imp-c-peak.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\09-cherub-low.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\10-cherub-high.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\11-demon-ready.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\12-demon-stab.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\cherub-fly-low.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\cherub-fly-high.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\cherub-stand-a.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\cherub-stand-b.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\cherub-back-low.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\cherub-back-high.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\cherubs\cherub-fly-heart.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\cherubs\cherub-stand-heart.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\cherubs\cherub-back-heart.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\imps\imp-a-mid.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\imps\imp-b-mid.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run\imps\imp-c-mid.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run-sheet-cherubs-trio.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_folai\run-sheet-imps-trio.png
+
+============================================================
+ЛОГОТИП
+============================================================
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\logo-full.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\logo-desktop.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\logo-open.mp4
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\logo-open.webm
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\logo-close.mp4
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\logo-close.webm
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\og-cover.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\og-cover.jpg
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\favicon-32.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\favicon-48.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\favicon-512.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\apple-touch-icon.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\logo-open.mp4
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\logo-open.webm
+BRANCH  C:\Users\roxan\Projects\TarGPT3\webapp\cards\logo-mark.svg
+BRANCH  C:\Users\roxan\Projects\TarGPT3\webapp\cards\logo-open.mp4
+BRANCH  C:\Users\roxan\Projects\TarGPT3\webapp\cards\logo-open.webm
+BRANCH  C:\Users\roxan\Projects\TarGPT3\webapp\cards\logo-open-poster.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\webapp\yesno\logo-mark.svg
+BRANCH  C:\Users\roxan\Projects\TarGPT3\webapp\yesno\logo-open.mp4
+BRANCH  C:\Users\roxan\Projects\TarGPT3\webapp\yesno\logo-open.webm
+BRANCH  C:\Users\roxan\Projects\TarGPT3\webapp\yesno\logo-open-poster.png
+DISK    C:\Users\roxan\Projects\TarGPT3\landing\static\images\portrait-placeholder.svg
+
+============================================================
+НАДПИСИ (нарисованный текст интерфейса)
+============================================================
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\txt\brand.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\txt\title-pick.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\txt\title-done.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\txt\btn-next.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\txt\btn-done.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\txt\hint-rev.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\txt\label-rev.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\txt\meta-yesno.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\txt\dot.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\txt\slash.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\txt\d0.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\txt\d1.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\txt\d2.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\txt\d3.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\txt\d4.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\txt\d5.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\txt\d6.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\txt\d7.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\txt\d8.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\txt\d9.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\txt\brand.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\landing\static\images\txt\title-pick.png
+
+============================================================
+КАРТЫ И РУБАШКА
+============================================================
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\card_back.jpg
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\card1.jpg
+... card78.jpg в той же папке
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_card_back_check.jpg
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_card_back_gold_rim_preview.jpg
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_card_back_gold_rim_compare.jpg
+BRANCH  C:\Users\roxan\Projects\TarGPT3\card_back_prod_check.jpg
+DISK    C:\Users\roxan\Projects\TarGPT3\static\card_back.jpg
+DISK    C:\Users\roxan\Projects\TarGPT3\static\card76.jpg
+DISK    C:\Users\roxan\Projects\TarGPT3\static\card77.jpg
+DISK    C:\Users\roxan\Projects\TarGPT3\static\card78.jpg
+DISK    C:\Users\roxan\Projects\TarGPT3\static\back_room.jpg
+DISK    C:\Users\roxan\Projects\TarGPT3\static\consultation.mp4
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\reviews_banner.png
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\broadcast_farnsworth_ai.jpg
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\broadcast_farnsworth_clean.jpg
+BRANCH  C:\Users\roxan\Projects\TarGPT3\static\broadcast_referral_unlim.jpg
+
+Превью вёрстки (не исходники персонажей), папка:
+BRANCH  C:\Users\roxan\Projects\TarGPT3\_jelly_preview\

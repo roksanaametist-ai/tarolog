@@ -5,10 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Follow the Frensy — персональный эзотерический ассистент, консультации и обучение">
     <title>Follow the Frensy</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/fonts.css') }}?v=1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}?v=4">
 </head>
 <body>
     <canvas id="particles" aria-hidden="true"></canvas>
@@ -154,6 +152,18 @@
                         <input type="text" name="contact" required minlength="3" maxlength="120" placeholder="@username или +7...">
                     </label>
                     <p class="field-hint">Приоритет — Telegram</p>
+                    <label class="field field-check">
+                        <input type="checkbox" name="consent_pd" value="1" required>
+                        <span>Согласен(на) на обработку персональных данных по <a href="{{ privacy_url }}" target="_blank" rel="noopener">политике</a></span>
+                    </label>
+                    <label class="field field-check">
+                        <input type="checkbox" name="consent_tb" value="1" required>
+                        <span>Согласен(на) на трансграничную передачу данных (мессенджеры, сайт/прокси в Германии, языковая модель — см. <a href="{{ privacy_url }}" target="_blank" rel="noopener">политику</a>)</span>
+                    </label>
+                    <label class="field field-check">
+                        <input type="checkbox" name="consent_oferta" value="1" required>
+                        <span>Принимаю <a href="{{ oferta_url }}" target="_blank" rel="noopener">оферту</a>, мне есть 18 лет. Это консультация, не медицина и не гарантия событий в жизни.</span>
+                    </label>
                     <button type="submit" class="btn btn-primary btn-wide">Получить 5 бесплатных раскладов</button>
                     <p id="form-error" class="form-error" hidden></p>
                 </form>
@@ -173,8 +183,59 @@
             </div>
         </section>
 
+        <section class="section buyer-legal" id="buyer">
+            <div class="container reveal">
+                <h2 class="section-title">Для покупателя</h2>
+                <div class="buyer-grid">
+                    <article>
+                        <h3>Реквизиты</h3>
+                        <p>Самозанятая {{ operator_name }} · ИНН {{ operator_inn }} · {{ operator_city }}</p>
+                    </article>
+                    <article>
+                        <h3>Контакты</h3>
+                        <p>
+                            <a href="{{ bot_url }}" target="_blank" rel="noopener">Telegram-бот</a>
+                            {% if contact_telegram %} · <a href="{{ contact_telegram }}" target="_blank" rel="noopener">написать Роксане</a>{% endif %}
+                            {% if operator_email %} · <a href="mailto:{{ operator_email }}">{{ operator_email }}</a>{% endif %}
+                        </p>
+                    </article>
+                    <article>
+                        <h3>Заказ и сроки</h3>
+                        <p>Заявка на сайте или в боте → оплата → доступ к боту обычно сразу (не позднее 24 часов). Консультация — в согласованный слот (1–14 дней). Видео в TikTok — до 14 дней.</p>
+                    </article>
+                    <article>
+                        <h3>Цены</h3>
+                        <p>Разбор вопроса — 1 111 ₽. Видеоразбор в TikTok — 3 333 ₽. Развёрнутая консультация — 11 111 ₽. Пакеты бота — в интерфейсе бота.</p>
+                    </article>
+                    <article>
+                        <h3>Оплата</h3>
+                        <p>Банковские карты и другие способы в форме Robokassa либо перевод по реквизитам в переписке. Чек — в «Мой налог».</p>
+                    </article>
+                    <article>
+                        <h3>Оказание услуг</h3>
+                        <p>Цифровой доступ и консультации онлайн. Физический товар и доставка не предусмотрены.</p>
+                    </article>
+                    <article>
+                        <h3>Возврат</h3>
+                        <p>До начала услуги — полный возврат. В процессе — за вычетом фактически оказанного. Комиссия платёжного сервиса с покупателя не удерживается. Пишите в Telegram или на почту «Возврат»: ответ до 10 дней, деньги тем же способом. Подробности — в <a href="{{ oferta_url }}">оферте</a>.</p>
+                    </article>
+                    <article>
+                        <h3>Персональные данные</h3>
+                        <p><a href="{{ privacy_url }}">Политика обработки персональных данных</a></p>
+                    </article>
+                </div>
+            </div>
+        </section>
+
         <footer class="footer">
-            <p>© Follow the Frensy</p>
+            <p class="site-foot-legal">Самозанятая {{ operator_name }} · ИНН {{ operator_inn }} · {{ operator_city }}</p>
+            <p class="site-foot-legal">Сайт и услуги для лиц старше 18 лет. Консультация, не медицина и не гарантия событий в жизни.</p>
+            <p class="site-foot-legal">
+                <a href="{{ bot_url }}" target="_blank" rel="noopener">Telegram</a>
+                {% if operator_email %} · <a href="mailto:{{ operator_email }}">{{ operator_email }}</a>{% endif %}
+                · <a href="{{ privacy_url }}">Политика ПД</a>
+                · <a href="{{ oferta_url }}">Оферта</a>
+            </p>
         </footer>
     </div>
 

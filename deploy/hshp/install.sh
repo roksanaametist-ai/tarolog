@@ -55,9 +55,10 @@ grep -q '^LANDING_DATA_DIR=' "${APP_DIR}/.env" || echo "LANDING_DATA_DIR=${APP_D
 echo "==> Systemd"
 cp "${APP_DIR}/deploy/hshp/targpt-bot.service" /etc/systemd/system/
 cp "${APP_DIR}/deploy/hshp/targpt-landing.service" /etc/systemd/system/
+cp "${APP_DIR}/deploy/hshp/targpt-max.service" /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable targpt-bot targpt-landing
-systemctl restart targpt-bot targpt-landing
+systemctl enable targpt-bot targpt-landing targpt-max
+systemctl restart targpt-bot targpt-landing targpt-max
 
 echo "==> Nginx (лендинг на /)"
 NGINX_SITE="/etc/nginx/sites-available/followthefrensy.ru"
@@ -78,4 +79,5 @@ echo ""
 echo "==> Готово"
 systemctl --no-pager status targpt-bot targpt-landing || true
 curl -sf http://127.0.0.1:5000/health && echo " (landing OK)" || echo "landing health check failed"
-echo "Проверьте: https://followthefrensy.ru/ и journalctl -u targpt-bot -n 20"
+echo "Проверьте: https://followthefrensy.com/ , journalctl -u targpt-bot и journalctl -u targpt-max"
+echo "Webhook MAX: location /max/webhook → 127.0.0.1:8088 (deploy/hshp/nginx-followthefrensy.conf)"

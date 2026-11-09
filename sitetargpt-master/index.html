@@ -90,10 +90,49 @@
         <div class="result-container"></div>
     </div>
 
+    <script src="https://st.max.ru/js/max-web-app.js"></script>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
 
     <script>
-        let tg = window.Telegram.WebApp;
+        if (window.WebApp && typeof window.WebApp.ready === "function") {
+            window.WebApp.ready();
+        }
+        let tg = window.Telegram && window.Telegram.WebApp;
+
+        function cardTitle(path) {
+            const n = Number(String(path).match(/card(\d+)/)[1]);
+            const ranks = ["Туз","Двойка","Тройка","Четверка","Пятерка","Шестерка","Семерка","Восьмерка","Девятка","Десятка","Король","Королева","Рыцарь","Паж"];
+            const arcana = ["Дурак","Маг","Верховная Жрица","Императрица","Император","Иерофант","Влюбленные","Колесница","Сила","Отшельник","Колесо Фортуны","Правосудие","Повешенный","Смерть","Умеренность","Дьявол","Башня","Звезда","Луна","Солнце","Суд","Мир"];
+            if (n >= 1 && n <= 22) return arcana[n - 1];
+            const suits = [[23, "Жезлов"], [37, "Кубков"], [51, "Мечей"], [65, "Пентаклей"]];
+            for (const [start, suit] of suits) {
+                if (n >= start && n < start + 14) return ranks[n - start] + " " + suit;
+            }
+            return path;
+        }
+
+        function submitCards(clickedCards) {
+            const maxApp = window.WebApp;
+            if (maxApp && maxApp.initData) {
+                fetch("https://followthefrensy.ru/max/webapp", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({init_data: maxApp.initData, cards: clickedCards})
+                }).finally(() => {
+                    if (typeof maxApp.close === "function") maxApp.close();
+                });
+                return;
+            }
+            if (tg && typeof tg.sendData === "function") {
+                tg.sendData(JSON.stringify({cards: clickedCards}));
+                tg.close();
+                return;
+            }
+            const names = clickedCards.map(cardTitle).join(", ");
+            const button = document.querySelector(".btn");
+            button.textContent = "Отправьте боту: " + names;
+            if (navigator.clipboard) navigator.clipboard.writeText(names).catch(() => {});
+        }
 
         let cards = [];
         for (let i = 1; i <= 78; i++) {
@@ -154,11 +193,7 @@
             }
             document.querySelector('.btn').style.display = 'block';
             document.querySelector('.btn').addEventListener('click', () => {
-                let data = {
-                    cards: clickedCards
-                }
-                tg.sendData(JSON.stringify(data));
-                tg.close();
+                submitCards(clickedCards);
             });
         }
     </script>
