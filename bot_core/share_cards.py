@@ -1182,6 +1182,218 @@ def _story_centered(
     return int(box[3] - box[1])
 
 
+# ---------------------------------------------------------------- надпись на драпировке (сторис)
+# Cormorant Garamond Italic с сайта: cg-02 — кириллица, cg-05 — латиница и знаки.
+_DRAPE_FONT_FILES = ("cg-02.woff2", "cg-05.woff2")
+_DRAPE_INK = (40, 32, 44)
+
+
+def _drape_fonts(size: int) -> list:
+    fonts = []
+    for name in _DRAPE_FONT_FILES:
+        for root in (
+            _project_root() / "static" / "fonts" / "cormorant",
+            Path("/root/tarolog/static/fonts/cormorant"),
+        ):
+            path = root / name
+            if not path.exists():
+                continue
+            try:
+                font = ImageFont.truetype(str(path), size)
+            except OSError:
+                continue
+            try:
+                font.set_variation_by_axes([500])
+            except Exception:
+                pass
+            fonts.append(font)
+            break
+    if not fonts:
+        fonts.append(_font(resolve_share_body_font(), size))
+    return fonts
+
+
+def _glyph_font(fonts: list, ch: str, cache: dict):
+    if ch in cache:
+        return cache[ch]
+    chosen = fonts[-1]
+    if ch == " ":
+        for f in reversed(fonts):
+            if f.getlength(" ") > 0:
+                chosen = f
+                break
+    else:
+        for f in fonts:
+            try:
+                nd = f.getmask("￿")
+                gm = f.getmask(ch)
+                if gm.size != nd.size or bytes(gm) != bytes(nd):
+                    chosen = f
+                    break
+            except Exception:
+                continue
+    cache[ch] = chosen
+    return chosen
+
+
+def _drape_runs(text: str, fonts: list, cache: dict) -> list:
+    runs: list = []
+    for ch in text:
+        f = _glyph_font(fonts, ch, cache)
+        if runs and runs[-1][1] is f:
+            runs[-1][0] += ch
+        else:
+            runs.append([ch, f])
+    return runs
+
+
+def _drape_width(text: str, fonts: list, cache: dict) -> float:
+    return sum(f.getlength(s) for s, f in _drape_runs(text, fonts, cache))
+
+
+def _balanced_wrap(words: list, measure, max_w: float, max_lines: int = 3):
+    """Строки примерно одной длины (не «длинная + огрызок»)."""
+    n = len(words)
+    if n == 0 or n > 40:
+        return None
+
+    def splits(start, left):
+        if left == 1:
+            yield [words[start:]]
+            return
+        for i in range(start + 1, n - left + 2):
+            for rest in splits(i, left - 1):
+                yield [words[start:i]] + rest
+
+    for k in range(1, min(max_lines, n) + 1):
+        best = None
+        for parts in splits(0, k):
+            lines = [" ".join(p) for p in parts]
+            widths = [measure(ln) for ln in lines]
+            if max(widths) > max_w:
+                continue
+            score = max(widths) - min(widths) * 0.35
+            if best is None or score < best[0]:
+                best = (score, lines)
+        if best is not None:
+            return best[1]
+    return None
+
+
+def _paste_quote_on_drapery_soft(
+    canvas: Image.Image,
+    *,
+    strip: Image.Image,
+    strip_x: int,
+    strip_y: int,
+    quote: str,
+) -> None:
+    """Фраза на ткани: ровные строки, мягкая дуга, «напечатано» по складкам."""
+    quote = " ".join(str(quote or "").split())
+    if not quote:
+        return
+    sw, sh = strip.size
+    ss = 2  # рисуем в 2x и уменьшаем — гладкие края
+    cloth = np.asarray(strip.convert("RGBA"))[:, :, 3].astype(np.float32) / 255.0
+    # Ровная часть ткани: от провиса края (~0.53) до низа (~0.90)
+    top, bottom = 0.555 * sh, 0.86 * sh
+    max_w = 0.50 * sw
+    words: list = []
+    for w in quote.split():
+        # тире не начинает строку — держится за предыдущее слово
+        if words and w in ("—", "–", "-"):
+            words[-1] += " " + w
+        else:
+            words.append(w)
+    lines = None
+    fonts: list = []
+    cache: dict = {}
+    for size in range(int(sh * 0.085), int(sh * 0.045), -1):
+        fonts = _drape_fonts(size * ss)
+        cache = {}
+        lines = _balanced_wrap(
+            words, lambda s: _drape_width(s, fonts, cache) / ss, max_w, max_lines=3
+        )
+        if lines:
+            asc, desc = fonts[0].getmetrics()
+            lh = (asc + desc) / ss * 1.02
+            if lh * len(lines) + sh * 0.06 <= bottom - top:
+                break
+        lines = None
+    if not lines:
+        # очень длинная фраза: мелко, по словам, с многоточием
+        size = int(sh * 0.045)
+        fonts = _drape_fonts(size * ss)
+        cache = {}
+        lines, cur = [], ""
+        for w in words:
+            cand = (cur + " " + w).strip()
+            if _drape_width(cand, fonts, cache) / ss <= max_w or not cur:
+                cur = cand
+            else:
+                lines.append(cur)
+                cur = w
+        lines.append(cur)
+        if len(lines) > 3:
+            lines = lines[:3]
+            lines[-1] = lines[-1].rstrip(".,;:—– ") + "…"
+    asc, desc = fonts[0].getmetrics()
+    line_h = int((asc + desc) * 1.02)
+    W, H = sw * ss, sh * ss
+    mask = np.zeros((H, W), dtype=np.float32)
+    block_h = line_h * len(lines) + int(sh * 0.05 * ss)
+    y_cur = int(((top + bottom) / 2) * ss - block_h / 2)
+    half = max_w * 0.62 * ss
+    sag = sh * 0.032 * ss
+    cx = W / 2
+    for ln in lines:
+        runs = _drape_runs(ln, fonts, cache)
+        lw = int(sum(f.getlength(s) for s, f in runs)) + 4
+        img = Image.new("L", (lw, line_h + 8), 0)
+        d = ImageDraw.Draw(img)
+        x = 2.0
+        for s, f in runs:
+            d.text((x, asc + 2), s, font=f, fill=255, anchor="ls")
+            x += f.getlength(s)
+        m = np.asarray(img, dtype=np.float32) / 255.0
+        x0 = int(cx - lw / 2)
+        for j in range(lw):
+            xx = x0 + j
+            if xx < 0 or xx >= W:
+                continue
+            nx = (xx - cx) / half
+            off = int(round(sag * max(0.0, 1.0 - nx * nx)))
+            y1 = y_cur + off
+            y2 = min(H, y1 + m.shape[0])
+            if y1 < 0 or y2 <= y1:
+                continue
+            col = m[: y2 - y1, j]
+            mask[y1:y2, xx] = np.maximum(mask[y1:y2, xx], col)
+        y_cur += line_h
+    # маленький ромбик-разделитель под текстом
+    orn = Image.new("L", (W, H), 0)
+    od = ImageDraw.Draw(orn)
+    oy = y_cur + int(sh * 0.025 * ss) + int(sag)
+    r = max(3, int(sh * 0.009 * ss))
+    od.polygon([(cx, oy - r), (cx + r, oy), (cx, oy + r), (cx - r, oy)], fill=200)
+    seg = int(sw * 0.07 * ss)
+    od.line([(cx - r * 2.2 - seg, oy), (cx - r * 2.2, oy)], fill=150, width=max(1, ss))
+    od.line([(cx + r * 2.2, oy), (cx + r * 2.2 + seg, oy)], fill=150, width=max(1, ss))
+    mask = np.maximum(mask, np.asarray(orn, dtype=np.float32) / 255.0 * 0.85)
+    small = Image.fromarray((mask * 255).astype(np.uint8)).resize((sw, sh), Image.Resampling.LANCZOS)
+    a = np.asarray(small, dtype=np.float32) / 255.0 * cloth * 0.9
+    # лёгкий блик снизу — будто вытиснено на ткани
+    hl = np.zeros_like(a)
+    hl[1:, :] = a[:-1, :]
+    hl = np.clip(hl - a, 0, 1) * 0.35
+    box = (strip_x, strip_y, strip_x + sw, strip_y + sh)
+    base = np.asarray(canvas.crop(box).convert("RGB"), dtype=np.float32)
+    ink = np.array(_DRAPE_INK, dtype=np.float32) / 255.0
+    out = base * (1.0 - a[..., None] * (1.0 - ink))
+    out = out + (255.0 - out) * hl[..., None]
+    canvas.paste(Image.fromarray(np.clip(out, 0, 255).astype(np.uint8)), box[:2])
+
+
 def generate_compat_story_card(
     output_path: str | Path,
     *,
@@ -1301,30 +1513,8 @@ def generate_compat_story_card(
         strip_w, strip_h = strip.size
         strip_x = (STORY_WIDTH - strip_w) // 2
         canvas.paste(strip, (strip_x, y), strip)
-        quote_max_w = max(260, int(strip_w * 0.42))
-        quote_area_h = max(72, int(strip_h * 0.28))
-        quote_font = _font(body_font, 24)
-        quote_lines: list[str] = []
-        line_step = 30
-        for size in range(28, 13, -1):
-            quote_font = _font(body_font, size)
-            line_step = max(18, size + 6)
-            max_lines = max(2, quote_area_h // line_step)
-            quote_lines = _wrap(draw, quote, quote_font, quote_max_w, max_lines)
-            if len(quote_lines) * line_step <= quote_area_h and (
-                not quote_lines or not quote_lines[-1].endswith("…")
-            ):
-                break
-        _paste_quote_on_drapery(
-            canvas,
-            strip=strip,
-            strip_x=strip_x,
-            strip_y=y,
-            strip_w=strip_w,
-            strip_h=strip_h,
-            lines=quote_lines,
-            font=quote_font,
-            line_step=line_step,
+        _paste_quote_on_drapery_soft(
+            canvas, strip=strip, strip_x=strip_x, strip_y=y, quote=quote
         )
     elif quote:
         qf = _font(body_font, 34)
