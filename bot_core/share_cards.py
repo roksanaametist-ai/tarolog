@@ -443,27 +443,6 @@ def _draw_line_on_path(
         s += cw
 
 
-def _balance_lines(
-    draw: ImageDraw.ImageDraw,
-    text: str,
-    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
-    lines: list[str],
-    max_w: int,
-) -> list[str]:
-    """Narrow the wrap width while the line count holds: even block, no lonely last word."""
-    if len(lines) < 2 or lines[-1].endswith("…"):
-        return lines
-    n_lines = len(lines)
-    width = max_w
-    while width > max_w * 0.6:
-        trial = _wrap(draw, text, font, width - 8, n_lines + 1)
-        if len(trial) != n_lines or trial[-1].endswith("…"):
-            break
-        lines = trial
-        width -= 8
-    return lines
-
-
 def _paste_quote_on_drapery(
     canvas: Image.Image,
     *,
@@ -479,15 +458,10 @@ def _paste_quote_on_drapery(
     """Draw summary as readable glyphs on curved paths following the swag."""
     if not lines:
         return
-    panel_w = max(200, int(strip_w * 0.5))
-    # Block is centred on the cloth body (lip ≈0.51h at centre, folds ≈0.88h),
-    # so the quote sits in the middle of the swag instead of hugging the lip.
-    sag = max(24.0, strip_h * 0.10)
-    max_lines = max(1, min(len(lines), 5))
-    sags = [sag * (1.0 - 0.12 * li) for li in range(max_lines)]
-    target_mid = strip_h * 0.715  # lowest point of the middle baseline
-    mid = (max_lines - 1) * 0.5
-    y0 = target_mid - sag - mid * float(line_step)
+    panel_w = max(200, int(strip_w * 0.4))
+    # High on drapery: stable readable baselines on the central swag.
+    y0 = strip_h * 0.438
+    sag = max(24.0, strip_h * 0.102)
     cloth_alpha = None
     if strip is not None:
         cloth_alpha = np.asarray(strip.convert("RGBA"))[:, :, 3]
@@ -496,15 +470,15 @@ def _paste_quote_on_drapery(
     fill = (6, 6, 8, 255)
     layer = Image.new("RGBA", (strip_w, strip_h), (0, 0, 0, 0))
 
+    max_lines = max(1, min(len(lines), 5))
     for li, line in enumerate(lines[:max_lines]):
-        # Lower lines flatten a little, like the cloth towards the hem.
-        line_sag = sags[li]
-        line_y0 = y0 + li * float(line_step) + (sag - line_sag)
-        # Keep baselines above the hem folds
-        if line_y0 + line_sag > strip_h * 0.88:
+        # Parallel offset down the swag with consistent rhythm.
+        line_y0 = y0 + li * float(line_step)
+        # Keep last baselines on opaque cloth (center lip ~0.52 + room)
+        if line_y0 + sag > strip_h * 0.78:
             break
         xs, ys, cum = _drapery_swag_path(
-            strip_w, strip_h, panel_w=panel_w, y0=line_y0, sag=line_sag
+            strip_w, strip_h, panel_w=panel_w, y0=line_y0, sag=sag
         )
         _draw_line_on_path(
             layer,
@@ -893,7 +867,6 @@ def generate_share_card(
             break
         if fits_height and size <= 12:
             break
-    quote_lines = _balance_lines(draw, quote, quote_font, quote_lines, quote_max_w)
     _paste_quote_on_drapery(
         canvas,
         strip=strip,
@@ -1328,21 +1301,20 @@ def generate_compat_story_card(
         strip_w, strip_h = strip.size
         strip_x = (STORY_WIDTH - strip_w) // 2
         canvas.paste(strip, (strip_x, y), strip)
-        quote_max_w = max(260, int(strip_w * 0.46))
-        quote_area_h = max(72, int(strip_h * 0.32))
+        quote_max_w = max(260, int(strip_w * 0.42))
+        quote_area_h = max(72, int(strip_h * 0.28))
         quote_font = _font(body_font, 24)
         quote_lines: list[str] = []
         line_step = 30
-        for size in range(30, 13, -1):
+        for size in range(28, 13, -1):
             quote_font = _font(body_font, size)
-            line_step = max(18, int(size * 1.3))
+            line_step = max(18, size + 6)
             max_lines = max(2, quote_area_h // line_step)
             quote_lines = _wrap(draw, quote, quote_font, quote_max_w, max_lines)
             if len(quote_lines) * line_step <= quote_area_h and (
                 not quote_lines or not quote_lines[-1].endswith("…")
             ):
                 break
-        quote_lines = _balance_lines(draw, quote, quote_font, quote_lines, quote_max_w)
         _paste_quote_on_drapery(
             canvas,
             strip=strip,
