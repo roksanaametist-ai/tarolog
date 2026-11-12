@@ -1301,7 +1301,7 @@ def generate_compat_story_card(
         strip_w, strip_h = strip.size
         strip_x = (STORY_WIDTH - strip_w) // 2
         canvas.paste(strip, (strip_x, y), strip)
-        quote_max_w = max(260, int(strip_w * 0.42))
+        quote_max_w = max(260, int(strip_w * 0.37))
         quote_area_h = max(72, int(strip_h * 0.28))
         quote_font = _font(body_font, 24)
         quote_lines: list[str] = []

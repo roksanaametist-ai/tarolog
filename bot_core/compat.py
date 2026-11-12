@@ -34,7 +34,8 @@ INVITE_TTL_SECONDS = 30 * 24 * 3600
 CLAIM_STALE_SECONDS = 10 * 60  # «зависший» claimed (упал бот) снова можно открыть
 PENDING_TTL_SECONDS = 2 * 24 * 3600
 NAME_MAX_LEN = 30
-STORY_PHRASE_MAX = 80
+STORY_PHRASE_MAX = 220
+STORY_PHRASE_MIN = 150
 
 TOPICS: Dict[str, Dict[str, str]] = {
     "love": {
@@ -131,7 +132,7 @@ def build_compat_question(
     if full:
         lines.append(
             "- В summary: главный вывод о совместимости и один мягкий совет "
-            "(максимум 3 коротких предложения)."
+            "(2–3 предложения, всего 150–250 символов)."
         )
     else:
         lines.append(
@@ -140,14 +141,28 @@ def build_compat_question(
     return "\n".join(lines)
 
 
-def story_phrase(summary: str, limit: int = STORY_PHRASE_MAX) -> str:
-    """Короткая фраза для сторис (до ~80 символов): первое предложение итога."""
+def story_phrase(
+    summary: str,
+    limit: int = STORY_PHRASE_MAX,
+    min_len: int = STORY_PHRASE_MIN,
+) -> str:
+    """Фраза для драпировки в сторис: целые предложения итога, пока не наберётся
+    ~min_len символов, но не длиннее limit (иначе не влезет на ткань)."""
     text = " ".join(str(summary or "").split())
     if not text:
         return "Карты показали, что вас связывает 💞"
-    first = re.split(r"(?<=[.!?…])\s+", text, maxsplit=1)[0].strip()
-    if len(first) <= limit:
-        return first
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?…])\s+", text) if s.strip()]
+    first = sentences[0]
+    picked = first
+    for sentence in sentences[1:]:
+        if len(picked) >= min_len:
+            break
+        candidate = f"{picked} {sentence}"
+        if len(candidate) > limit:
+            break
+        picked = candidate
+    if len(picked) <= limit:
+        return picked
     cut = first[: limit - 1]
     if " " in cut:
         cut = cut.rsplit(" ", 1)[0]
