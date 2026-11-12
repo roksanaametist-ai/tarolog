@@ -284,6 +284,10 @@ def build_section(
             "\n<b>Источники новых за 30 дней</b>\n",
             _source_lines(snapshot.get("acquisition_sources_30d") or {}, limit=10),
         ]
+        paid_compat = snapshot.get("compat_paid_sources_30d") or {}
+        if paid_compat:
+            out.append("\n<b>Купили «Совместимость» за 99 ₽ — 30 дней, по источникам</b>\n")
+            out.append(_source_lines(paid_compat, limit=10))
         for title, key in (("Партнёры", "partner_funnel_30d"), ("Кампании / трекинг-ссылки", "campaign_funnel_30d")):
             rows = snapshot.get(key) or {}
             if not rows:

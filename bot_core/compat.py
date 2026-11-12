@@ -9,7 +9,9 @@
           "cards": [{"path", "label", "reversed"}, ...],   # 3 карты короткого
           "created_at": <unix>, "status": "open|claimed|completed",
           "invitee_id", "invitee_name", "claimed_at", "completed_at",
-          "full": {"cards": [...5], "roles": [...], "texts": [...], "summary": "..."}
+          "full": {"cards": [...5], "roles": [...], "texts": [...], "summary": "..."},
+          "paid": {"order", "method", "at"},   # полный расклад куплен (статус остаётся open)
+          "paid_checkout_inv_id": <InvId>        # открытый счёт Робокассы на этот расклад
         }
       },
       "pending": {"<chat_id>": {"id": "<invite_id>", "at": <unix>}}
@@ -370,6 +372,51 @@ class CompatInviteStore:
 
         return self._update(_m)
 
+    # -- платный полный расклад (без приглашения)
+    def save_paid_full(
+        self,
+        invite_id: str,
+        buyer_id: int,
+        *,
+        cards: List[Dict[str, Any]],
+        roles: List[str],
+        texts: List[str],
+        summary: str,
+        payment: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Сохранить купленный полный расклад. Если расклад уже есть — вернуть его, не перезаписывая.
+
+        Статус приглашения не меняется: партнёр по ссылке потом получит этот же расклад бесплатно.
+        """
+
+        def _m(doc: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            inv = doc["invites"].get(invite_id)
+            if not inv or int(inv.get("inviter_id") or 0) != int(buyer_id):
+                return None
+            if (inv.get("full") or {}).get("cards"):
+                return dict(inv)
+            inv["full"] = {
+                "cards": [
+                    {"path": c.get("path"), "label": c.get("label"), "reversed": bool(c.get("reversed"))}
+                    for c in cards
+                ],
+                "roles": list(roles),
+                "texts": list(texts),
+                "summary": summary,
+            }
+            inv["paid"] = dict(payment, at=float(self.now()))
+            return dict(inv)
+
+        return self._update(_m)
+
+    def set_paid_checkout(self, invite_id: str, inv_id: int) -> None:
+        def _m(doc: Dict[str, Any]) -> None:
+            inv = doc["invites"].get(invite_id)
+            if inv:
+                inv["paid_checkout_inv_id"] = int(inv_id)
+
+        self._update(_m)
+
     # -- отложенное продолжение (пока человек принимает соглашение)
     def set_pending(self, chat_id: int, invite_id: str) -> None:
         def _m(doc: Dict[str, Any]) -> None:
@@ -397,6 +444,9 @@ FUNNEL_EVENTS = (
     ("compat_invite_click", "Нажали «Позвать»"),
     ("compat_invite_open", "Друг открыл ссылку"),
     ("compat_full_done", "Полный расклад"),
+    ("compat_paid_offer_shown", "Увидели «узнать сейчас — 99 ₽»"),
+    ("compat_paid_click", "Нажали «99 ₽»"),
+    ("compat_paid_done", "Купили полный расклад"),
     ("compat_story_share", "Сторис"),
     ("compat_live_click", "Живой разбор"),
 )

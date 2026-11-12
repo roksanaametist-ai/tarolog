@@ -816,6 +816,9 @@ class AnalyticsStore:
             "acquisition_sources_30d": self._property_breakdown(
                 "bot_started", "source", days=30, today=today, only_new=True
             ),
+            "compat_paid_sources_30d": self._property_breakdown(
+                "compat_paid_done", "source", days=30, today=today
+            ),
             "callbacks_7d": self._property_breakdown(
                 "callback_clicked", "callback", days=7, today=today
             ),

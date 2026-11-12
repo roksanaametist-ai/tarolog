@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 import shared_wallet
 
-from bot_core import robokassa_store
+from bot_core import compat_paid, robokassa_store
 
 logger = logging.getLogger(__name__)
 
@@ -335,7 +335,7 @@ def _track_payment_succeeded(
                 "provider": "robokassa",
                 "plan": plan_key or "unknown",
                 "amount_kopecks": int(amount_kopecks),
-                "recurring": kind != "parent",
+                "recurring": kind == "child",
                 "source": str(u.get("acquisition_source") or "unknown"),
                 "partner": str(u.get("partner_code") or ""),
                 "campaign": str(u.get("campaign_code") or ""),
@@ -346,6 +346,56 @@ def _track_payment_succeeded(
     except Exception as exc:
         logger.warning("analytics payment_succeeded failed inv_id=%s: %s", inv_id, exc)
         return False
+
+
+def _fulfill_compat(
+    inv_id: int, paid: dict[str, Any], seed: Optional[dict], *, out_sum: Optional[str] = None
+) -> dict[str, Any]:
+    """Оплачен полный расклад «Совместимость»: записать заказ (один на InvId) и сообщить человеку."""
+    from bot_core.operational_store import OperationalStore
+
+    chat_id = int(paid["chat_id"])
+    amount_kopecks = int(paid.get("amount_kopecks") or 0)
+    invite_id = str(paid.get("invite_id") or "")
+    if not invite_id:
+        logger.error("compat invoice without invite_id inv_id=%s", inv_id)
+        return {"ok": False, "error": "compat invoice without invite", "inv_id": inv_id}
+    try:
+        orders = compat_paid.CompatOrderStore(OperationalStore(_data_dir() / "bot_state.sqlite3"))
+        created, _order = orders.register(
+            compat_paid.robokassa_key(inv_id),
+            chat_id=chat_id,
+            invite_id=invite_id,
+            method="robokassa",
+            amount_kopecks=amount_kopecks,
+        )
+    except Exception as exc:
+        # без ACK Робокасса повторит уведомление — заказ запишется со второй попытки
+        logger.error("compat order register failed inv_id=%s: %s", inv_id, exc)
+        return {"ok": False, "error": "compat order", "inv_id": inv_id}
+    if created:
+        try:
+            _bump_payment_stats(amount_kopecks, compat_paid.PLAN_KEY)
+        except OSError:
+            pass
+        _track_payment_succeeded(inv_id, chat_id, compat_paid.PLAN_KEY, amount_kopecks, "compat", seed)
+    _mark_fulfilled(inv_id)
+    notified = False
+    if not paid.get("notify_sent"):
+        notified = notify_telegram(
+            chat_id, "Оплата прошла ✨ Раскладываю 5 карт — полный расклад придёт через минуту."
+        )
+        if notified:
+            robokassa_store.mark_notify_sent(inv_id)
+    return {
+        "ok": True,
+        "already": not created,
+        "chat_id": chat_id,
+        "plan_key": compat_paid.PLAN_KEY,
+        "kind": compat_paid.INVOICE_KIND,
+        "notified": notified,
+        "out_sum": out_sum,
+    }
 
 
 def fulfill_invoice(inv_id: int, *, out_sum: Optional[str] = None) -> dict[str, Any]:
@@ -384,6 +434,10 @@ def fulfill_invoice(inv_id: int, *, out_sum: Optional[str] = None) -> dict[str, 
             seed = ud[str(chat_id)]
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         seed = None
+
+    if kind == compat_paid.INVOICE_KIND:
+        # платная «Совместимость»: подписку НЕ выдаём, только заказ — расклад делает бот
+        return _fulfill_compat(int(inv_id), paid, seed, out_sum=out_sum)
 
     wallet_end = None
     try:

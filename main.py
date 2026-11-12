@@ -77,6 +77,7 @@ from bot_core.compat import (
     validate_name as validate_compat_name,
 )
 from bot_core.share_cards import generate_compat_story_card
+from bot_core import compat_paid
 from bot_core.price_poll import (
     CHOICE_LABELS as PRICE_POLL_LABELS,
     QUESTION as PRICE_POLL_QUESTION,
@@ -120,6 +121,7 @@ operational_store = OperationalStore(
 PAYMENT_FILE = data_file("payment_data.json")
 payment_stats_store = PaymentStatsStore(operational_store, PAYMENT_FILE)
 compat_store = CompatInviteStore(operational_store)
+compat_orders = compat_paid.CompatOrderStore(operational_store)
 public_card_store = PublicCardStore(
     data_file("public_card_posts.json"),
     data_file("public_card_entries.json"),
@@ -8211,16 +8213,43 @@ async def compat_share_url(invite: Dict[str, Any]) -> str:
     )
 
 
+def compat_paid_available() -> bool:
+    """Платный полный расклад можно купить: оплаты включены и есть хоть один способ."""
+    if not PAYMENTS_ENABLED:
+        return False
+    if compat_paid.stars_enabled():
+        return True
+    try:
+        from bot_core import robokassa
+
+        return robokassa.is_configured()
+    except Exception:
+        return False
+
+
 def compat_after_short_kb(invite: Dict[str, Any]) -> types.InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.row(
         types.InlineKeyboardButton(
-            text=f"📩 Позвать его(её) — откроется полный расклад",
+            text=compat_paid.invite_button_text(invite.get("partner_name") or ""),
             callback_data=f"compat_inv:{invite['id']}",
         )
     )
+    if compat_paid_available():
+        kb.row(
+            types.InlineKeyboardButton(
+                text=compat_paid.buy_button_text(), callback_data=f"compat_buy:{invite['id']}"
+            )
+        )
     kb.row(compat_menu_button())
     return kb.as_markup()
+
+
+def compat_short_after_text() -> str:
+    return (
+        "Это короткий взгляд. Позови его(её) — и вам обоим бесплатно откроется "
+        "полный расклад из 5 карт: что вас связывает, что мешает и куда всё идёт."
+    )
 
 
 async def compat_share_kb(invite: Dict[str, Any]) -> types.InlineKeyboardMarkup:
@@ -8538,12 +8567,17 @@ async def run_compat_short(
         await pause_reading(READING_PACE_BEFORE_SHARE)
         msg = await bot.send_message(
             chat_id,
-            f"Это короткий взгляд. Позови его(её) — и вам обоим бесплатно откроется "
-            "полный расклад из 5 карт: что вас связывает, что мешает и куда всё идёт.",
+            compat_short_after_text(),
             reply_markup=compat_after_short_kb(invite),
         )
         await remember_inline_menu(chat_id, msg.message_id)
         analytics.track("compat_short_done", user_id=chat_id, properties={"topic": topic})
+        if compat_paid_available():
+            analytics.track(
+                "compat_paid_offer_shown",
+                user_id=chat_id,
+                properties={"invite": invite["id"], **user_data.get_acquisition(chat_id)},
+            )
         try:
             await on_user_completed_reading(chat_id)
         except Exception:
@@ -8684,6 +8718,20 @@ async def run_compat_full(chat_id: int, invite_id: str, invitee_name: str, state
         await compat_show_invite(chat_id, invite_id, state)
         return False
     inv = res.invite or {}
+    bought = inv.get("full") or {}
+    if bought.get("cards"):
+        # Полный расклад уже купил пригласивший — партнёру тот же расклад, бесплатно и без генерации
+        return await _compat_finish_full(
+            chat_id,
+            invite_id,
+            inv,
+            invitee_name,
+            cards=list(bought.get("cards") or []),
+            roles=list(bought.get("roles") or []),
+            texts=list(bought.get("texts") or []),
+            summary=str(bought.get("summary") or ""),
+            from_purchase=True,
+        )
     try:
         first = [dict(c) for c in (inv.get("cards") or [])][:3]
         used = {c.get("path") for c in first}
@@ -8719,6 +8767,25 @@ async def run_compat_full(chat_id: int, invite_id: str, invitee_name: str, state
         )
         return False
     texts, summary = result
+    return await _compat_finish_full(
+        chat_id, invite_id, inv, invitee_name, cards=cards, roles=roles, texts=texts, summary=summary
+    )
+
+
+async def _compat_finish_full(
+    chat_id: int,
+    invite_id: str,
+    inv: Dict[str, Any],
+    invitee_name: str,
+    *,
+    cards: List[Dict[str, Any]],
+    roles: List[str],
+    texts: List[str],
+    summary: str,
+    from_purchase: bool = False,
+) -> bool:
+    topic = inv.get("topic") or "love"
+    inviter_name = inv.get("inviter_name") or "Ты"
     done = compat_store.complete(
         invite_id, chat_id, cards=cards, roles=roles, texts=texts, summary=summary
     )
@@ -8735,7 +8802,18 @@ async def run_compat_full(chat_id: int, invite_id: str, invitee_name: str, state
         chat_id, cards, roles, texts, summary, header=header, reply_markup=compat_after_full_kb(invite_id)
     )
     inviter_id = int(inv.get("inviter_id") or 0)
-    if inviter_id and inviter_id != chat_id:
+    if inviter_id and inviter_id != chat_id and from_purchase:
+        # у пригласившего этот расклад уже есть — коротко сообщаем, без повтора всех карт
+        try:
+            await bot.send_message(
+                inviter_id,
+                f"{invitee_name} откликнулся(ась) 💞 Ваш полный расклад теперь открыт и у него(неё).",
+                reply_markup=compat_new_kb(),
+            )
+        except Exception as e:
+            logging.warning("compat full notify inviter %s failed: %s", inviter_id, e)
+            mark_unreachable_from_exc(inviter_id, e)
+    elif inviter_id and inviter_id != chat_id:
         try:
             await compat_send_spread(
                 inviter_id,
@@ -8777,7 +8855,7 @@ async def compat_replay_full(chat_id: int, inv: Dict[str, Any]) -> None:
         full.get("summary") or "",
         header=(
             "Этот расклад уже открыт — вот он ещё раз 💞\n"
-            f"{inv.get('inviter_name')} + {inv.get('invitee_name')}"
+            f"{inv.get('inviter_name')} + {inv.get('invitee_name') or inv.get('partner_name')}"
         ),
         reply_markup=compat_after_full_kb(inv["id"]),
         paced=False,
@@ -8796,14 +8874,9 @@ def _compat_story_path(invite_id: str) -> str:
     return os.path.join(folder, f"{invite_id}.jpg")
 
 
-@dp.callback_query(F.data.startswith("compat_story:"))
-async def compat_story_cb(call: CallbackQuery):
-    await call.answer("Готовлю картинку…")
-    invite_id = call.data.split(":", 1)[1]
-    chat_id = call.message.chat.id
-    inv = compat_store.get(invite_id)
-    if not _compat_member(inv, call.from_user.id) or inv.get("status") != "completed":
-        return
+async def compat_send_story(chat_id: int, inv: Dict[str, Any], *, track: bool = True) -> bool:
+    """Вертикальная картинка для сторис (кешируется по приглашению)."""
+    invite_id = inv["id"]
     full = inv.get("full") or {}
     path = _compat_story_path(invite_id)
     try:
@@ -8812,7 +8885,7 @@ async def compat_story_cb(call: CallbackQuery):
                 generate_compat_story_card,
                 path,
                 first_name=inv.get("inviter_name") or "",
-                second_name=inv.get("invitee_name") or "",
+                second_name=inv.get("invitee_name") or inv.get("partner_name") or "",
                 topic=compat_topic_label(inv.get("topic") or "love"),
                 card_paths=[c.get("path") for c in (full.get("cards") or [])[:3]],
                 phrase=compat_story_phrase(full.get("summary") or ""),
@@ -8822,9 +8895,23 @@ async def compat_story_cb(call: CallbackQuery):
             FSInputFile(path),
             caption="Сохрани картинку и выложи в сторис 💞 Размер уже подходит.",
         )
-        analytics.track("compat_story_share", user_id=chat_id, properties={"invite": invite_id})
+        if track:
+            analytics.track("compat_story_share", user_id=chat_id, properties={"invite": invite_id})
+        return True
     except Exception as e:
         logging.warning("compat story failed %s: %s", invite_id, e)
+        return False
+
+
+@dp.callback_query(F.data.startswith("compat_story:"))
+async def compat_story_cb(call: CallbackQuery):
+    await call.answer("Готовлю картинку…")
+    invite_id = call.data.split(":", 1)[1]
+    chat_id = call.message.chat.id
+    inv = compat_store.get(invite_id)
+    if not _compat_member(inv, call.from_user.id) or not (inv.get("full") or {}).get("cards"):
+        return
+    if not await compat_send_story(chat_id, inv):
         await bot.send_message(chat_id, "Не получилось собрать картинку, попробуй ещё раз чуть позже.")
 
 
@@ -8835,6 +8922,376 @@ async def compat_live_cb(call: CallbackQuery, state: FSMContext):
     analytics.track("compat_live_click", user_id=call.message.chat.id, properties={"invite": invite_id})
     await state.clear()
     await send_consultation_invite(call.message.chat.id)
+
+
+# ---------- платный полный расклад без приглашения (99 ₽ / 69 ⭐)
+
+
+def _compat_owner_invite(invite_id: str, user_id: int) -> Optional[Dict[str, Any]]:
+    inv = compat_store.get(invite_id)
+    if not inv or int(inv.get("inviter_id") or 0) != int(user_id):
+        return None
+    return inv
+
+
+def compat_pay_kb(invite_id: str) -> types.InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    if compat_paid.stars_enabled():
+        kb.row(
+            types.InlineKeyboardButton(
+                text=f"⭐ {compat_paid.PRICE_STARS} звёзд", callback_data=f"compat_pay_stars:{invite_id}"
+            )
+        )
+    kb.row(
+        types.InlineKeyboardButton(
+            text=f"💳 Картой / СБП — {compat_paid.PRICE_KOPECKS // 100} ₽",
+            callback_data=f"compat_pay_rk:{invite_id}",
+        )
+    )
+    kb.row(types.InlineKeyboardButton(text="⬅️ Назад", callback_data=f"compat_pay_back:{invite_id}"))
+    return kb.as_markup()
+
+
+def compat_paid_after_kb(inv: Dict[str, Any]) -> types.InlineKeyboardMarkup:
+    invite_id = inv["id"]
+    partner = inv.get("partner_name") or "его(её)"
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        types.InlineKeyboardButton(
+            text="🔮 Живой разбор у Роксаны — 1 111 ₽", callback_data=f"compat_live:{invite_id}"
+        )
+    )
+    if inv.get("status") == "open":
+        kb.row(
+            types.InlineKeyboardButton(
+                text=f"📩 Позвать {partner} — откроется и у него(неё)",
+                callback_data=f"compat_inv:{invite_id}",
+            )
+        )
+    kb.row(compat_menu_button())
+    return kb.as_markup()
+
+
+@dp.callback_query(F.data.startswith("compat_buy:"))
+async def compat_buy_cb(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    invite_id = call.data.split(":", 1)[1]
+    chat_id = call.message.chat.id
+    inv = _compat_owner_invite(invite_id, call.from_user.id)
+    if not inv:
+        await bot.send_message(chat_id, "Расклад не найден — сделай новый.", reply_markup=compat_new_kb())
+        return
+    if (inv.get("full") or {}).get("cards"):
+        await compat_replay_full(chat_id, inv)
+        return
+    if not compat_paid_available():
+        await bot.send_message(chat_id, "Оплата сейчас недоступна. Позови его(её) — расклад откроется бесплатно 💞")
+        return
+    analytics.track(
+        "compat_paid_click",
+        user_id=chat_id,
+        properties={"invite": invite_id, **user_data.get_acquisition(chat_id)},
+    )
+    text = compat_paid.pay_screen_text(inv.get("partner_name") or "")
+    try:
+        await call.message.edit_text(text, parse_mode="HTML", reply_markup=compat_pay_kb(invite_id))
+    except Exception:
+        await bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=compat_pay_kb(invite_id))
+
+
+@dp.callback_query(F.data.startswith("compat_pay_back:"))
+async def compat_pay_back_cb(call: CallbackQuery):
+    await call.answer()
+    invite_id = call.data.split(":", 1)[1]
+    inv = _compat_owner_invite(invite_id, call.from_user.id)
+    if not inv:
+        return
+    try:
+        await call.message.edit_text(compat_short_after_text(), reply_markup=compat_after_short_kb(inv))
+    except Exception:
+        await bot.send_message(
+            call.message.chat.id, compat_short_after_text(), reply_markup=compat_after_short_kb(inv)
+        )
+
+
+@dp.callback_query(F.data.startswith("compat_pay_rk:"))
+async def compat_pay_rk_cb(call: CallbackQuery):
+    from bot_core import robokassa, robokassa_store
+
+    await call.answer()
+    invite_id = call.data.split(":", 1)[1]
+    chat_id = call.message.chat.id
+    inv = _compat_owner_invite(invite_id, call.from_user.id)
+    if not inv:
+        return
+    if (inv.get("full") or {}).get("cards"):
+        await compat_replay_full(chat_id, inv)
+        return
+    if not PAYMENTS_ENABLED or not robokassa.is_configured():
+        await bot.send_message(chat_id, "Оплата картой сейчас недоступна, попробуй позже 🙏")
+        return
+    inv_id = 0
+    old = int(inv.get("paid_checkout_inv_id") or 0)
+    if old:
+        rec = robokassa_store.get_invoice(old)
+        if rec and rec.get("status") == "pending" and rec.get("kind") == compat_paid.INVOICE_KIND:
+            inv_id = old  # тот же счёт — чтобы не плодить вторые оплаты
+    try:
+        if not inv_id:
+            order_manager.increment_order_number()
+            inv_id = int(order_manager.get_order_number())
+            robokassa_store.put_pending(
+                inv_id,
+                chat_id=chat_id,
+                plan_key=compat_paid.PLAN_KEY,
+                amount_kopecks=compat_paid.PRICE_KOPECKS,
+                kind=compat_paid.INVOICE_KIND,
+                extra={"invite_id": invite_id},
+            )
+            compat_store.set_paid_checkout(invite_id, inv_id)
+        link = robokassa.build_payment_link(
+            inv_id=inv_id,
+            amount_rub=compat_paid.PRICE_KOPECKS / 100.0,
+            description=compat_paid.PRODUCT_TITLE,
+            shp={"chat_id": str(chat_id), "plan": compat_paid.PLAN_KEY},
+            email=user_data.get_user_email(chat_id) or None,
+        )
+    except Exception as e:
+        logging.error("compat robokassa link failed %s: %s", invite_id, e)
+        await bot.send_message(chat_id, "Не получилось открыть оплату, попробуй ещё раз через минуту 🙏")
+        return
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text=f"💳 Оплатить {compat_paid.PRICE_KOPECKS // 100} ₽", url=link.url))
+    kb.row(types.InlineKeyboardButton(text="⬅️ Назад", callback_data=f"compat_pay_back:{invite_id}"))
+    await bot.send_message(
+        chat_id,
+        "Нажми кнопку — откроется безопасная страница Robokassa (карта или СБП).\n"
+        "После оплаты полный расклад придёт сюда сам. Это разовая оплата, без подписки.",
+        reply_markup=kb.as_markup(),
+    )
+    asyncio.create_task(compat_watch_robokassa(inv_id))
+
+
+async def compat_watch_robokassa(inv_id: int) -> None:
+    """Ждём оплату счёта (ResultURL — основной путь) и сразу выдаём расклад."""
+    from bot_core import robokassa, robokassa_fulfill, robokassa_store
+
+    key = compat_paid.robokassa_key(inv_id)
+    for attempt in range(60):
+        try:
+            rec = robokassa_store.get_invoice(inv_id)
+            if rec and rec.get("status") != "paid" and attempt in (18, 59):
+                st = await asyncio.to_thread(robokassa.op_state, inv_id)
+                if st is not None and st.paid:
+                    await asyncio.to_thread(robokassa_fulfill.fulfill_invoice, inv_id, out_sum=st.out_sum)
+                    rec = robokassa_store.get_invoice(inv_id)
+            if rec and rec.get("status") == "paid":
+                if await asyncio.to_thread(compat_orders.get, key):
+                    await compat_deliver_order(key, force=True)
+                return
+        except Exception as e:
+            logging.warning("compat robokassa watch inv=%s: %s", inv_id, e)
+        await asyncio.sleep(10)
+
+
+@dp.callback_query(F.data.startswith("compat_pay_stars:"))
+async def compat_pay_stars_cb(call: CallbackQuery):
+    await call.answer()
+    invite_id = call.data.split(":", 1)[1]
+    chat_id = call.message.chat.id
+    inv = _compat_owner_invite(invite_id, call.from_user.id)
+    if not inv or not compat_paid.stars_enabled():
+        return
+    if (inv.get("full") or {}).get("cards"):
+        await compat_replay_full(chat_id, inv)
+        return
+    await bot.send_invoice(
+        chat_id,
+        title=compat_paid.PRODUCT_TITLE,
+        description="5 карт — что вас связывает, что мешает и куда всё идёт. Разовая покупка.",
+        payload=compat_paid.stars_payload(invite_id),
+        provider_token="",
+        currency="XTR",
+        prices=[types.LabeledPrice(label="Полный расклад", amount=compat_paid.PRICE_STARS)],
+    )
+
+
+@dp.pre_checkout_query()
+async def compat_pre_checkout(query: types.PreCheckoutQuery):
+    invite_id = compat_paid.parse_stars_payload(query.invoice_payload)
+    ok = bool(
+        invite_id
+        and compat_paid.stars_enabled()
+        and query.currency == "XTR"
+        and int(query.total_amount) == compat_paid.PRICE_STARS
+        and _compat_owner_invite(invite_id, query.from_user.id)
+    )
+    if ok:
+        await query.answer(ok=True)
+    else:
+        await query.answer(ok=False, error_message="Этот счёт устарел — открой оплату заново из расклада.")
+
+
+@dp.message(F.successful_payment)
+async def compat_successful_payment(message: types.Message):
+    sp = message.successful_payment
+    invite_id = compat_paid.parse_stars_payload(sp.invoice_payload)
+    if not invite_id or sp.currency != "XTR":
+        logging.warning("unexpected successful_payment payload=%s", sp.invoice_payload)
+        return
+    chat_id = message.chat.id
+    key = compat_paid.stars_key(sp.telegram_payment_charge_id)
+    created, _rec = await asyncio.to_thread(
+        compat_orders.register,
+        key,
+        chat_id=chat_id,
+        invite_id=invite_id,
+        method="stars",
+        amount_stars=int(sp.total_amount),
+    )
+    if created:
+        analytics.track(
+            "payment_succeeded",
+            user_id=chat_id,
+            properties={
+                "plan": compat_paid.PLAN_KEY,
+                "provider": "stars",
+                "amount_stars": int(sp.total_amount),
+                "recurring": False,
+            },
+            dedupe_key=f"payment:{key}",
+        )
+        await bot.send_message(chat_id, "Оплата прошла ✨ Раскладываю 5 карт — полный расклад придёт через минуту.")
+    await compat_deliver_order(key, force=True)
+
+
+async def compat_deliver_order(key: str, *, force: bool = False) -> bool:
+    """Выдать оплаченный полный расклад. Без списаний с баланса, вне безлимита."""
+    rec = await asyncio.to_thread(compat_orders.begin_delivery, key, force=force)
+    if not rec:
+        return False
+    chat_id = int(rec["chat_id"])
+    invite_id = str(rec["invite_id"])
+    try:
+        inv = compat_store.get(invite_id)
+        if not inv:
+            raise RuntimeError(f"invite {invite_id} missing")
+        replay = bool((inv.get("full") or {}).get("cards"))
+        if not replay:
+            inviter_name = inv.get("inviter_name") or "Ты"
+            partner_name = inv.get("partner_name") or "Партнёр"
+            first = [dict(c) for c in (inv.get("cards") or [])][:3]
+            used = {c.get("path") for c in first}
+            extra: List[Dict[str, Any]] = []
+            rev = user_data.get_reversed_cards_enabled(chat_id)
+            for _ in range(2):
+                card = draw_random_tarot_card(used)
+                used.add(card["path"])
+                extra.append(apply_card_orientation(card, reversed_enabled=rev))
+            cards = first + extra
+            roles = compat_full_roles(inviter_name, partner_name)
+            question = build_compat_question(inv.get("topic") or "love", inviter_name, partner_name, full=True)
+            result = await compat_generate(question, cards, roles)
+            if not result:
+                raise RuntimeError("generation incomplete")
+            texts, summary = result
+            inv = compat_store.save_paid_full(
+                invite_id,
+                chat_id,
+                cards=cards,
+                roles=roles,
+                texts=texts,
+                summary=summary,
+                payment={
+                    "key": key,
+                    "method": rec.get("method"),
+                    "amount_kopecks": rec.get("amount_kopecks"),
+                    "amount_stars": rec.get("amount_stars"),
+                },
+            )
+            if not inv:
+                raise RuntimeError("save_paid_full failed")
+            try:
+                user_questions_log.append(
+                    chat_id,
+                    kind="compat_paid",
+                    question=f"Совместимость ({compat_topic_label(inv.get('topic') or 'love')}): {partner_name}",
+                )
+            except Exception:
+                pass
+        full = inv.get("full") or {}
+        partner = inv.get("invitee_name") or inv.get("partner_name") or ""
+        await compat_send_spread(
+            chat_id,
+            full.get("cards") or [],
+            full.get("roles") or [],
+            full.get("texts") or [],
+            full.get("summary") or "",
+            header=(
+                f"💞 Ваш полный расклад · {compat_topic_label(inv.get('topic') or 'love')}\n"
+                f"{inv.get('inviter_name') or 'Ты'} + {partner}"
+            ),
+            reply_markup=None,
+            paced=not replay,
+        )
+        await compat_send_story(chat_id, inv, track=False)
+        await bot.send_message(
+            chat_id,
+            "Этот расклад только у тебя — {p} ничего не получит, пока ты сам(а) не позовёшь.".format(
+                p=inv.get("partner_name") or "второй человек"
+            ),
+            reply_markup=compat_paid_after_kb(inv),
+        )
+        await asyncio.to_thread(compat_orders.finish, key, replay=replay)
+        analytics.track(
+            "compat_paid_done",
+            user_id=chat_id,
+            properties={
+                "invite": invite_id,
+                "method": rec.get("method"),
+                "amount_kopecks": int(rec.get("amount_kopecks") or 0),
+                "amount_stars": int(rec.get("amount_stars") or 0),
+                **user_data.get_acquisition(chat_id),
+            },
+            dedupe_key=f"compat-paid:{key}",
+        )
+        return True
+    except Exception as e:
+        logging.exception("compat paid delivery %s failed: %s", key, e)
+        after = await asyncio.to_thread(compat_orders.fail, key)
+        if not after:
+            return False
+        if after.get("status") == "failed":
+            for admin_id in BOT_STATIC_ADMINS:
+                try:
+                    await bot.send_message(
+                        admin_id,
+                        f"⚠️ Платная совместимость не выдана: заказ {key}, chat {chat_id}. Нужна ручная выдача.",
+                    )
+                except Exception:
+                    pass
+        elif int(after.get("attempts") or 0) == 1:
+            try:
+                await bot.send_message(
+                    chat_id,
+                    "Оплата получена ✅ Нейросеть сейчас перегружена — расклад придёт сам в течение часа, "
+                    "ничего нажимать не нужно.",
+                )
+            except Exception as e2:
+                mark_unreachable_from_exc(chat_id, e2)
+        return False
+
+
+async def compat_paid_loop() -> None:
+    """Подбирает оплаченные, но не выданные заказы (упала генерация, бот перезапускался)."""
+    await asyncio.sleep(30)
+    while True:
+        try:
+            for rec in await asyncio.to_thread(compat_orders.due):
+                await compat_deliver_order(rec["key"])
+        except Exception as e:
+            logging.warning("compat paid loop: %s", e)
+        await asyncio.sleep(60)
 
 
 def compat_funnel_counts(days: int = 7) -> Dict[str, Dict[str, int]]:
@@ -14250,6 +14707,7 @@ async def main():
     if PAYMENTS_ENABLED:
         asyncio.create_task(payment_nurture_loop())
         asyncio.create_task(recurring_billing_loop())
+        asyncio.create_task(compat_paid_loop())
         logging.info("Payments ENABLED provider=%s", PAYMENT_PROVIDER)
     else:
         # На время офлайн-оплаты не дёргаем карты и не дожимаем оплату

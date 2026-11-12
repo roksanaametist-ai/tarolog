@@ -274,3 +274,86 @@ def test_funnel_counts_and_html():
     assert counts.get("compat_short_done", {}).get("events", 0) >= 1 or counts
     html_out = main.build_compat_funnel_html(counts, days=7)
     assert "Совместимость" in html_out
+
+
+# ---------------------------------------------------------------- платный полный расклад
+
+
+def _stars_payment_update(uid: int, invite_id: str, charge: str):
+    from datetime import datetime
+
+    from aiogram.types import Chat, Message, SuccessfulPayment, Update
+
+    return Update(
+        update_id=next(_ids),
+        message=Message(
+            message_id=next(_ids),
+            date=datetime.now(),
+            chat=Chat(id=uid, type="private"),
+            from_user=h.user(uid),
+            successful_payment=SuccessfulPayment(
+                currency="XTR",
+                total_amount=main.compat_paid.PRICE_STARS,
+                invoice_payload=main.compat_paid.stars_payload(invite_id),
+                telegram_payment_charge_id=charge,
+                provider_payment_charge_id="",
+            ),
+        ),
+    )
+
+
+def test_paid_buy_screen_and_back(monkeypatch):
+    monkeypatch.setattr(main, "compat_paid_available", lambda: True)
+    monkeypatch.delenv("COMPAT_STARS_ENABLED", raising=False)
+    a = new_uid()
+    make_old_user(a, questions=2)
+    inv_id = make_invite(a, partner="Маша")
+    assert session.find_button(a, f"compat_buy:{inv_id}")
+    feed(h.cb_update(a, f"compat_buy:{inv_id}"))
+    assert any("Маша ничего не узнает" in t for t in session.texts(a))
+    assert session.find_button(a, f"compat_pay_rk:{inv_id}")
+    assert not session.find_button(a, "compat_pay_stars:")  # звёзды выключены
+    feed(h.cb_update(a, f"compat_pay_back:{inv_id}"))
+    assert session.find_button(a, f"compat_inv:{inv_id}")
+    # чужой не может купить чужой расклад
+    b = new_uid()
+    make_old_user(b)
+    feed(h.cb_update(b, f"compat_buy:{inv_id}"))
+    assert not session.find_button(b, "compat_pay_rk:")
+
+
+def test_paid_stars_delivers_once_partner_free(monkeypatch):
+    monkeypatch.setattr(main, "compat_paid_available", lambda: True)
+    monkeypatch.setenv("COMPAT_STARS_ENABLED", "1")
+    a = new_uid()
+    make_old_user(a, questions=2)
+    inv_id = make_invite(a, partner="Маша")
+    before = balance(a)
+    feed(h.cb_update(a, f"compat_buy:{inv_id}"))
+    assert session.find_button(a, f"compat_pay_stars:{inv_id}")
+    feed(_stars_payment_update(a, inv_id, f"ch-{a}"))
+    inv = main.compat_store.get(inv_id)
+    assert len(inv["full"]["cards"]) == 5
+    assert [c["path"] for c in inv["full"]["cards"][:3]] == [c["path"] for c in inv["cards"][:3]]
+    assert inv["status"] == "open"
+    assert balance(a) == before  # расклады не списаны
+    assert len(full_headers(a)) == 1
+    assert any(c.get("photo") for c in session.for_chat(a))  # картинка для сторис
+    assert session.find_button(a, f"compat_live:{inv_id}")
+    # повтор того же платежа — второго расклада нет
+    feed(_stars_payment_update(a, inv_id, f"ch-{a}"))
+    assert len(full_headers(a)) == 1
+    assert len(main.compat_orders.for_invite(inv_id)) == 1
+    # повторное нажатие «купить» показывает готовый расклад, без оплаты
+    feed(h.cb_update(a, f"compat_buy:{inv_id}"))
+    assert any("уже открыт" in t for t in session.texts(a))
+    # партнёр приходит по ссылке — получает тот же расклад бесплатно
+    b = new_uid()
+    make_old_user(b)
+    open_link(b, inv_id, name="Маша")
+    accept_full(b, inv_id, name="Маша")
+    done = main.compat_store.get(inv_id)
+    assert done["status"] == "completed"
+    assert done["full"]["summary"] == inv["full"]["summary"]
+    assert len(full_headers(b)) == 1
+    assert any("откликнулся" in t for t in session.texts(a))
