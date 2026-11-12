@@ -62,6 +62,20 @@ from bot_core import (
     parse_start_attribution,
 )
 from bot_core.user_state_merge import merge_user_documents, overlay_wallet_from_disk
+from bot_core.compat import (
+    TOPICS as COMPAT_TOPICS,
+    CompatInviteStore,
+    build_compat_question,
+    build_funnel_html as build_compat_funnel_html,
+    build_payload as build_compat_payload,
+    full_roles as compat_full_roles,
+    invite_message_text as compat_invite_message_text,
+    short_roles as compat_short_roles,
+    story_phrase as compat_story_phrase,
+    topic_label as compat_topic_label,
+    validate_name as validate_compat_name,
+)
+from bot_core.share_cards import generate_compat_story_card
 from bot_core.price_poll import (
     CHOICE_LABELS as PRICE_POLL_LABELS,
     QUESTION as PRICE_POLL_QUESTION,
@@ -104,6 +118,7 @@ operational_store = OperationalStore(
 )
 PAYMENT_FILE = data_file("payment_data.json")
 payment_stats_store = PaymentStatsStore(operational_store, PAYMENT_FILE)
+compat_store = CompatInviteStore(operational_store)
 public_card_store = PublicCardStore(
     data_file("public_card_posts.json"),
     data_file("public_card_entries.json"),
@@ -274,6 +289,7 @@ GROUP_INVITE_URL = os.getenv("GROUP_INVITE_URL", "").strip()
 GROUP_BUTTON_TEXT = "👥 Наша группа"
 BACK_BUTTON_TEXT = "◀️ Назад"
 CONSULTATION_BUTTON_TEXT = "Живой расклад"
+COMPAT_BUTTON = "💞 Совместимость"
 CONSULTATION_BUTTON_OLD = "✨ Консультация эзотерика (платно)"
 CONSULTATION_BUTTON_SPARKLE = "✨ Живая консультация"
 CONSULTATION_BUTTON_ROXANA = "С Роксаной"
@@ -417,6 +433,13 @@ class romantic(StatesGroup):
     cards = State()
 
 
+class CompatFlow(StatesGroup):
+    topic = State()
+    self_name = State()
+    partner_name = State()
+    invitee_name = State()
+
+
 class dangerous(StatesGroup):
     context = State()
     cards = State()
@@ -492,6 +515,8 @@ READING_KIND_LABELS = {
     "day": "Карта дня",
     "tomorrow": "Карта на завтра",
     "romantic": "Чувства Мысли Действия",
+    "compat": "Совместимость",
+    "compat_full": "Совместимость (полный)",
     "warning": "Предупреждение",
     "money": "Деньги",
     "choice": "Выбор из двух",
@@ -1733,6 +1758,7 @@ _MENU_NAV_TEXTS = (
     *CONSULTATION_BUTTONS,
     MORE_MENU_BUTTON,
     CLASSIC_SPREADS_BUTTON,
+    COMPAT_BUTTON,
     HELP_MENU_BUTTON,
     HELP_MENU_BUTTON_OLD,
     SPREAD_SETTINGS_BUTTON,
@@ -1781,6 +1807,8 @@ async def divert_fsm_menu_nav(message: types.Message, state: FSMContext) -> bool
         )
     elif text == CLASSIC_SPREADS_BUTTON:
         await classic_spreads_menu(message)
+    elif text == COMPAT_BUTTON:
+        await compat_start(message, state)
     elif text == MORE_MENU_BUTTON:
         await more_menu(message)
     elif text in {HELP_MENU_BUTTON, HELP_MENU_BUTTON_OLD}:
@@ -4776,6 +4804,8 @@ _KIND_LABELS = {
     "day": "Карта дня",
     "tomorrow": "Карта на завтра",
     "romantic": "СМД",
+    "compat": "Совместимость",
+    "compat_full": "Совм. полный",
     "warning": "Предупреждение",
     "money": "Деньги",
     "choice": "Выбор из двух",
@@ -4812,7 +4842,7 @@ def build_admin_dashboard_html() -> str:
         "integrity": operational_store.integrity_check(),
         "documents": len(operational_store.list_documents()),
     }
-    return build_admin_dashboard(
+    html_out = build_admin_dashboard(
         snapshot,
         users=user_data.get_aggregate_stats(),
         reviews=reviews_store.count_by_status(),
@@ -4824,6 +4854,13 @@ def build_admin_dashboard_html() -> str:
         public_deck=public_card_store.get_admin_stats(days=7),
         secret_stats_cmd=ADMIN_CMD_TOTAL_USERS or None,
     )
+    try:
+        html_out = html_out.rstrip() + "\n\n" + build_compat_funnel_html(
+            compat_funnel_counts(7), days=7
+        )
+    except Exception as exc:
+        logging.warning("compat funnel failed: %s", exc)
+    return html_out
 
 
 
@@ -6643,6 +6680,11 @@ async def send_welcome(message: types.Message, state: FSMContext):
     )
     referrer_id = attribution.referrer_id
     referral_source = "share" if attribution.source == "share" else "ref"
+    compat_invite_id = None
+    if attribution.source == "compat" and attribution.compat_invite_id:
+        compat_invite_id = attribution.compat_invite_id
+        referrer_id = compat_store.referrer_for(compat_invite_id, chat_id)
+        referral_source = "compat"
     if attribution.source == "landing":
         _mark_landing_registration(chat_id)
     if is_new_user:
@@ -6822,6 +6864,19 @@ async def send_welcome(message: types.Message, state: FSMContext):
                 pass
             await maybe_award_referral_milestones(referrer_id)
 
+    if compat_invite_id:
+        analytics.track(
+            "compat_invite_open",
+            user_id=chat_id,
+            properties={"invite": compat_invite_id, "is_new": is_new_user},
+            dedupe_key=f"compat-open:{compat_invite_id}:{chat_id}",
+        )
+        if agreement_manager.user_has_agreed(user_id):
+            await dismiss_inline_menu(chat_id)
+            await compat_show_invite(chat_id, compat_invite_id, state, answer=message.answer)
+            return
+        compat_store.set_pending(chat_id, compat_invite_id)
+
     needs_first_reading_cta = (
         bool(user_data.get_referred_by(chat_id))
         and not user_data.has_done_first_reading(chat_id)
@@ -6899,6 +6954,16 @@ async def process_agreement(callback: types.CallbackQuery, state: FSMContext):
             await start_public_own_spread(callback.message, state, pending["id"])
             await callback.answer()
             return
+        compat_pending = compat_store.pop_pending(user_id)
+        if compat_pending:
+            await compat_show_invite(
+                callback.message.chat.id,
+                compat_pending,
+                state,
+                answer=callback.message.answer,
+            )
+            await callback.answer()
+            return
         if go_yesno:
             await run_dont_sign_yesno(
                 callback.message.chat.id,
@@ -6915,6 +6980,7 @@ async def process_agreement(callback: types.CallbackQuery, state: FSMContext):
         )
     else:
         public_card_store.pop_pending(user_id)
+        compat_store.pop_pending(user_id)
         await callback.message.answer(
             "Вы отказались от соглашения. Пожалуйста, начните снова, нажав /start."
         )
@@ -8026,6 +8092,703 @@ async def tomorrow_card_push_loop() -> None:
 
 
 #-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+#-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+# 💞 Совместимость: короткий расклад инициатора + полный расклад по приглашению
+
+_compat_busy: set = set()
+
+
+def _compat_user_name(user: Optional[types.User]) -> Optional[str]:
+    if not user:
+        return None
+    return validate_compat_name(getattr(user, "first_name", None) or "")
+
+
+def compat_topics_kb() -> types.InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        *[
+            types.InlineKeyboardButton(text=t["button"], callback_data=f"compat_topic:{key}")
+            for key, t in COMPAT_TOPICS.items()
+        ]
+    )
+    kb.row(types.InlineKeyboardButton(text="⬅️ Назад", callback_data="compat_back"))
+    return kb.as_markup()
+
+
+def compat_menu_button() -> types.InlineKeyboardButton:
+    return types.InlineKeyboardButton(text="🏠 В меню", callback_data="compat_menu")
+
+
+def compat_new_kb() -> types.InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="💞 Сделать свой расклад", callback_data="compat_new"))
+    kb.row(compat_menu_button())
+    return kb.as_markup()
+
+
+async def compat_invite_link(invite_id: str) -> str:
+    username = await get_bot_username()
+    return f"https://t.me/{username}?start={build_compat_payload(invite_id)}"
+
+
+async def compat_share_url(invite: Dict[str, Any]) -> str:
+    link = await compat_invite_link(invite["id"])
+    text = compat_invite_message_text(invite.get("inviter_name") or "", link)
+    return (
+        "https://t.me/share/url?url="
+        + quote(link, safe="")
+        + "&text="
+        + quote(text, safe="")
+    )
+
+
+def compat_after_short_kb(invite: Dict[str, Any]) -> types.InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        types.InlineKeyboardButton(
+            text=f"📩 Позвать {invite.get('partner_name')} — откроется полный расклад",
+            callback_data=f"compat_inv:{invite['id']}",
+        )
+    )
+    kb.row(compat_menu_button())
+    return kb.as_markup()
+
+
+async def compat_share_kb(invite: Dict[str, Any]) -> types.InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        types.InlineKeyboardButton(
+            text=f"📩 Позвать {invite.get('partner_name')}",
+            url=await compat_share_url(invite),
+        )
+    )
+    kb.row(compat_menu_button())
+    return kb.as_markup()
+
+
+def compat_after_full_kb(invite_id: str) -> types.InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="📲 Поделиться в сторис", callback_data=f"compat_story:{invite_id}"))
+    kb.row(
+        types.InlineKeyboardButton(
+            text="🔮 Живой разбор у Роксаны — 1 111 ₽", callback_data=f"compat_live:{invite_id}"
+        )
+    )
+    kb.row(compat_menu_button())
+    return kb.as_markup()
+
+
+async def compat_generate(
+    question: str, cards: List[Dict[str, Any]], roles: List[str]
+) -> Optional[tuple]:
+    """Трактовки карт + итог. None — нейросеть не ответила полностью."""
+    n = len(cards)
+    labels = [c["label"] for c in cards]
+    structured = await fetch_structured_reading(question, labels, roles)
+    if not structured_is_complete(structured, n):
+        try:
+            structured = await get_tarot_reading_structured(
+                question + "\n\nПОВТОР: верни полный JSON со всеми трактовками и summary.",
+                labels,
+                card_roles_in_order=roles,
+            )
+        except Exception as e:
+            logging.warning("compat extra retry failed: %s", e)
+    if not structured_is_complete(structured, n):
+        return None
+    raw_texts = list(structured.get("card_interpretations") or [])[:n]
+    texts = [
+        tighten_tarot_text(
+            clean_tarot_text(t) if isinstance(t, str) else "",
+            max_chars=TAROT_CARD_MAX_CHARS,
+            max_sentences=TAROT_CARD_MAX_SENTENCES,
+        )
+        for t in raw_texts
+    ]
+    summary = tighten_tarot_text(
+        structured.get("summary") or "",
+        max_chars=TAROT_SUMMARY_MAX_CHARS,
+        max_sentences=TAROT_SUMMARY_MAX_SENTENCES,
+    )
+    return texts, summary
+
+
+async def compat_send_spread(
+    chat_id: int,
+    cards: List[Dict[str, Any]],
+    roles: List[str],
+    texts: List[str],
+    summary: str,
+    *,
+    header: str,
+    reply_markup=None,
+    paced: bool = True,
+) -> None:
+    await bot.send_message(chat_id, header)
+    for idx, card in enumerate(cards):
+        if paced and idx:
+            await pause_reading(READING_PACE_BETWEEN_CARDS)
+        role = roles[idx] if idx < len(roles) else ""
+        caption, body = split_caption_and_body(card["label"], texts[idx] if idx < len(texts) else "", idx + 1)
+        if role:
+            caption = f"{role}\n{caption}"
+        if card.get("path"):
+            await photo_sender.send_photo(
+                chat_id, card["path"], caption=caption, reversed_card=bool(card.get("reversed"))
+            )
+        else:
+            await bot.send_message(chat_id, caption)
+        if body:
+            if paced:
+                await pause_reading(READING_PACE_AFTER_PHOTO)
+            await send_typed_message(chat_id, body, typing=paced)
+    if summary:
+        if paced:
+            await pause_reading(READING_PACE_BEFORE_SUMMARY)
+        await send_typed_message(chat_id, f"✨ Итог:\n{summary}", typing=paced)
+    if reply_markup is not None:
+        if paced:
+            await pause_reading(READING_PACE_BEFORE_SHARE)
+        msg = await bot.send_message(chat_id, "Что дальше? 👇", reply_markup=reply_markup)
+        await remember_inline_menu(chat_id, msg.message_id)
+
+
+# ---------- инициатор
+
+
+async def compat_start(message: types.Message, state: FSMContext, *, user: Optional[types.User] = None) -> None:
+    chat_id = message.chat.id
+    await state.clear()
+    if not _user_can_spend_question(chat_id):
+        await send_zero_balance(chat_id, answer=message.answer)
+        return
+    analytics.track("compat_start", user_id=chat_id)
+    who = user or message.from_user
+    name = _compat_user_name(who) if who and not getattr(who, "is_bot", False) else None
+    await state.set_state(CompatFlow.topic)
+    if name:
+        await state.update_data(compat_tg_name=name)
+    await tracked_answer(
+        message,
+        state,
+        "💞 Совместимость\n\n"
+        "Три карты покажут тебя, второго человека и вашу связь. "
+        "Потом можно позвать его(её) — и вам обоим бесплатно откроется полный расклад из 5 карт.\n\n"
+        "Про что смотрим?",
+        reply_markup=compat_topics_kb(),
+    )
+
+
+@dp.message(F.text == COMPAT_BUTTON)
+async def compat_menu_entry(message: types.Message, state: FSMContext):
+    logger.log_command(message.chat.id, message.text)
+    await cleanup_service_msgs(message.chat.id)
+    await dismiss_inline_menu(message.chat.id)
+    await compat_start(message, state)
+
+
+@dp.callback_query(F.data == "classic_go_compat")
+async def classic_go_compat_cb(call: CallbackQuery, state: FSMContext):
+    await _classic_go_begin(call)
+    await compat_start(call.message, state, user=call.from_user)
+
+
+@dp.callback_query(F.data == "classic_compat")
+async def classic_compat_cb(call: CallbackQuery):
+    await call.answer()
+    await show_classic_preview(call, "compat")
+
+
+@dp.callback_query(F.data == "compat_new")
+async def compat_new_cb(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await clear_callback_menu(call)
+    await compat_start(call.message, state, user=call.from_user)
+
+
+async def compat_go_home(chat_id: int, state: FSMContext, *, answer=None) -> None:
+    await cleanup_cards_pick_ui(chat_id, state)
+    await state.clear()
+    await show_main_reply_keyboard(chat_id, "Вернулись в главное меню", answer=answer)
+
+
+@dp.callback_query(F.data.in_({"compat_back", "compat_menu"}))
+async def compat_back_cb(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await clear_callback_menu(call, delete_message=(call.data == "compat_back"))
+    await compat_go_home(call.message.chat.id, state)
+
+
+@dp.callback_query(F.data.startswith("compat_topic:"))
+async def compat_topic_cb(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    if await state.get_state() != CompatFlow.topic.state:
+        await clear_callback_menu(call)
+        return
+    topic = call.data.split(":", 1)[1]
+    if topic not in COMPAT_TOPICS:
+        topic = "love"
+    await clear_callback_menu(call)
+    await state.update_data(compat_topic=topic)
+    data = await state.get_data()
+    name = data.get("compat_tg_name") or _compat_user_name(call.from_user)
+    if name:
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            types.InlineKeyboardButton(text="Да", callback_data="compat_self_yes"),
+            types.InlineKeyboardButton(text="Другое имя", callback_data="compat_self_other"),
+        )
+        await state.update_data(compat_tg_name=name)
+        await state.set_state(CompatFlow.self_name)
+        await tracked_answer(call.message, state, f"Ты — {name}?", reply_markup=kb.as_markup())
+    else:
+        await state.set_state(CompatFlow.self_name)
+        await tracked_answer(
+            call.message, state, "Как тебя зовут? Напиши имя одним словом.", reply_markup=back_kb()
+        )
+
+
+async def _compat_ask_partner(message: types.Message, state: FSMContext) -> None:
+    await state.set_state(CompatFlow.partner_name)
+    await tracked_answer(
+        message,
+        state,
+        "Как зовут второго человека? Напиши имя (только буквы, до 30 символов).",
+        reply_markup=back_kb(),
+    )
+
+
+@dp.callback_query(F.data.in_({"compat_self_yes", "compat_self_other"}))
+async def compat_self_cb(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await clear_callback_menu(call)
+    if await state.get_state() != CompatFlow.self_name.state:
+        return
+    data = await state.get_data()
+    if call.data == "compat_self_yes" and data.get("compat_tg_name"):
+        await state.update_data(compat_self=data["compat_tg_name"])
+        await _compat_ask_partner(call.message, state)
+        return
+    await tracked_answer(
+        call.message, state, "Как тебя зовут? Напиши имя.", reply_markup=back_kb()
+    )
+
+
+_COMPAT_NAME_HINT = "Имя — до 30 символов: только буквы, пробел и дефис, без ссылок. Попробуй ещё раз."
+
+
+@dp.message(CompatFlow.self_name)
+async def compat_self_name_msg(message: types.Message, state: FSMContext):
+    logger.log_command(message.chat.id, message.text)
+    if await divert_fsm_menu_nav(message, state):
+        return
+    name = validate_compat_name(message.text)
+    if not name:
+        await answer_tracked(message, _COMPAT_NAME_HINT, state=state, reply_markup=back_kb())
+        return
+    await remember_user_setup_msg(state, message)
+    await state.update_data(compat_self=name)
+    await _compat_ask_partner(message, state)
+
+
+@dp.message(CompatFlow.partner_name)
+async def compat_partner_name_msg(message: types.Message, state: FSMContext):
+    logger.log_command(message.chat.id, message.text)
+    if await divert_fsm_menu_nav(message, state):
+        return
+    partner = validate_compat_name(message.text)
+    if not partner:
+        await answer_tracked(message, _COMPAT_NAME_HINT, state=state, reply_markup=back_kb())
+        return
+    await remember_user_setup_msg(state, message)
+    data = await state.get_data()
+    self_name = data.get("compat_self") or data.get("compat_tg_name") or "Я"
+    topic = data.get("compat_topic") or "love"
+    await run_compat_short(message.chat.id, state, self_name=self_name, partner_name=partner, topic=topic)
+
+
+async def run_compat_short(
+    chat_id: int, state: FSMContext, *, self_name: str, partner_name: str, topic: str
+) -> Optional[Dict[str, Any]]:
+    if chat_id in _compat_busy:
+        return None
+    _compat_busy.add(chat_id)
+    try:
+        await cleanup_cards_pick_ui(chat_id, state)
+        await state.clear()
+        if not _user_can_spend_question(chat_id):
+            await send_zero_balance(chat_id)
+            return None
+        cards = draw_spread_cards(3, reversed_enabled=user_data.get_reversed_cards_enabled(chat_id))
+        roles = compat_short_roles(self_name, partner_name)
+        question = build_compat_question(topic, self_name, partner_name, full=False)
+        wait_msg = await bot.send_message(chat_id, "✍️ Таролог смотрит карты…")
+        try:
+            await bot.send_chat_action(chat_id, action="typing")
+        except Exception:
+            pass
+        result = await compat_generate(question, cards, roles)
+        try:
+            await bot.delete_message(chat_id, wait_msg.message_id)
+        except Exception:
+            pass
+        if not result:
+            analytics.track(
+                "reading_failed", user_id=chat_id, properties={"kind": "compat", "reason": "incomplete"}
+            )
+            await bot.send_message(
+                chat_id,
+                "Сейчас высокая нагрузка на нейросеть — расклад не собрался.\n\n"
+                "Расклад не списан. Попробуй ещё раз через 15–30 минут.",
+                reply_markup=main_kb(chat_id),
+            )
+            return None
+        texts, summary = result
+        _spend_question_if_needed(chat_id)
+        invite = compat_store.create_invite(
+            inviter_id=chat_id,
+            inviter_name=self_name,
+            partner_name=partner_name,
+            topic=topic,
+            cards=cards,
+        )
+        try:
+            user_questions_log.append(
+                chat_id, kind="compat", question=f"Совместимость ({compat_topic_label(topic)}): {partner_name}"
+            )
+        except Exception as e:
+            logging.warning("compat log append failed: %s", e)
+        await compat_send_spread(
+            chat_id,
+            cards,
+            roles,
+            texts,
+            summary,
+            header=f"💞 Совместимость · {compat_topic_label(topic)}\n{self_name} + {partner_name}",
+        )
+        await pause_reading(READING_PACE_BEFORE_SHARE)
+        msg = await bot.send_message(
+            chat_id,
+            f"Это короткий взгляд. Позови {partner_name} — и вам обоим бесплатно откроется "
+            "полный расклад из 5 карт: что вас связывает, что мешает и куда всё идёт.",
+            reply_markup=compat_after_short_kb(invite),
+        )
+        await remember_inline_menu(chat_id, msg.message_id)
+        analytics.track("compat_short_done", user_id=chat_id, properties={"topic": topic})
+        try:
+            await on_user_completed_reading(chat_id)
+        except Exception:
+            pass
+        return invite
+    finally:
+        _compat_busy.discard(chat_id)
+
+
+@dp.callback_query(F.data.startswith("compat_inv:"))
+async def compat_invite_cb(call: CallbackQuery):
+    await call.answer()
+    invite_id = call.data.split(":", 1)[1]
+    invite = compat_store.get(invite_id)
+    chat_id = call.message.chat.id
+    if not invite or int(invite.get("inviter_id") or 0) != int(call.from_user.id):
+        await bot.send_message(chat_id, "Приглашение не найдено — сделай новый расклад.", reply_markup=compat_new_kb())
+        return
+    analytics.track(
+        "compat_invite_click",
+        user_id=chat_id,
+        properties={"invite": invite_id},
+    )
+    link = await compat_invite_link(invite_id)
+    await bot.send_message(
+        chat_id,
+        f"Нажми кнопку и выбери {invite.get('partner_name')} в Telegram — придёт такое сообщение:\n\n"
+        + compat_invite_message_text(invite.get("inviter_name") or "", link)
+        + "\n\nСсылка работает 30 дней и открывает один полный расклад для вас двоих.",
+        reply_markup=await compat_share_kb(invite),
+        disable_web_page_preview=True,
+    )
+
+
+# ---------- приглашённый
+
+
+async def compat_show_invite(chat_id: int, invite_id: str, state: FSMContext, *, answer=None) -> None:
+    send = answer or (lambda t, **kw: bot.send_message(chat_id, t, **kw))
+    await state.clear()
+    res = compat_store.check(invite_id, chat_id)
+    inv = res.invite or {}
+    if res.status in {"missing", "expired"}:
+        await send("Приглашение устарело — сделай свой расклад 💞", reply_markup=compat_new_kb())
+        return
+    if res.status == "self":
+        await send(
+            f"Это твоё приглашение — отправь его {inv.get('partner_name')} 💞",
+            reply_markup=await compat_share_kb(inv),
+        )
+        return
+    if res.status == "done":
+        await compat_replay_full(chat_id, inv)
+        return
+    if res.status == "taken":
+        await send(
+            "Это приглашение уже открыл другой человек. Сделай свой расклад 💞",
+            reply_markup=compat_new_kb(),
+        )
+        return
+    if res.status == "busy":
+        await send("Расклад уже готовится — подожди минутку 🙏")
+        return
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="👀 Посмотреть", callback_data=f"compat_view:{invite_id}"))
+    kb.row(compat_menu_button())
+    msg = await send(
+        f"{inv.get('inviter_name')} позвал(а) тебя посмотреть вашу совместимость 💞\n"
+        f"Тема: {compat_topic_label(inv.get('topic') or 'love')}.\n\n"
+        "Вам обоим бесплатно откроется полный расклад из 5 карт.",
+        reply_markup=kb.as_markup(),
+    )
+    if getattr(msg, "message_id", None):
+        await remember_inline_menu(chat_id, msg.message_id)
+
+
+@dp.callback_query(F.data.startswith("compat_view:"))
+async def compat_view_cb(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await clear_callback_menu(call)
+    invite_id = call.data.split(":", 1)[1]
+    chat_id = call.message.chat.id
+    res = compat_store.check(invite_id, call.from_user.id)
+    if res.status != "ok":
+        await compat_show_invite(chat_id, invite_id, state)
+        return
+    partner = (res.invite or {}).get("partner_name") or ""
+    await state.clear()
+    await state.set_state(CompatFlow.invitee_name)
+    await state.update_data(compat_invite_id=invite_id)
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        types.InlineKeyboardButton(text="Да", callback_data=f"compat_inv_yes:{invite_id}"),
+        types.InlineKeyboardButton(text="Другое имя", callback_data=f"compat_inv_other:{invite_id}"),
+    )
+    await tracked_answer(call.message, state, f"Ты — {partner}?", reply_markup=kb.as_markup())
+
+
+@dp.callback_query(F.data.startswith("compat_inv_yes:") | F.data.startswith("compat_inv_other:"))
+async def compat_inv_name_cb(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await clear_callback_menu(call)
+    action, invite_id = call.data.split(":", 1)
+    chat_id = call.message.chat.id
+    if action == "compat_inv_yes":
+        inv = compat_store.get(invite_id) or {}
+        name = inv.get("partner_name") or _compat_user_name(call.from_user) or "Я"
+        await run_compat_full(chat_id, invite_id, name, state)
+        return
+    await state.set_state(CompatFlow.invitee_name)
+    await state.update_data(compat_invite_id=invite_id)
+    await tracked_answer(call.message, state, "Как тебя зовут? Напиши имя.", reply_markup=back_kb())
+
+
+@dp.message(CompatFlow.invitee_name)
+async def compat_invitee_name_msg(message: types.Message, state: FSMContext):
+    logger.log_command(message.chat.id, message.text)
+    if await divert_fsm_menu_nav(message, state):
+        return
+    name = validate_compat_name(message.text)
+    if not name:
+        await answer_tracked(message, _COMPAT_NAME_HINT, state=state, reply_markup=back_kb())
+        return
+    await remember_user_setup_msg(state, message)
+    invite_id = (await state.get_data()).get("compat_invite_id")
+    if not invite_id:
+        await compat_go_home(message.chat.id, state, answer=message.answer)
+        return
+    await run_compat_full(message.chat.id, invite_id, name, state)
+
+
+async def run_compat_full(chat_id: int, invite_id: str, invitee_name: str, state: FSMContext) -> bool:
+    """Полный расклад: бесплатно, один раз на приглашение, приходит обоим."""
+    await cleanup_cards_pick_ui(chat_id, state)
+    await state.clear()
+    res = compat_store.claim(invite_id, chat_id, invitee_name)
+    if res.status != "ok":
+        await compat_show_invite(chat_id, invite_id, state)
+        return False
+    inv = res.invite or {}
+    try:
+        first = [dict(c) for c in (inv.get("cards") or [])][:3]
+        used = {c.get("path") for c in first}
+        extra: List[Dict[str, Any]] = []
+        rev = user_data.get_reversed_cards_enabled(int(inv.get("inviter_id") or chat_id))
+        for _ in range(2):
+            card = draw_random_tarot_card(used)
+            used.add(card["path"])
+            extra.append(apply_card_orientation(card, reversed_enabled=rev))
+        cards = first + extra
+        inviter_name = inv.get("inviter_name") or "Ты"
+        roles = compat_full_roles(inviter_name, invitee_name)
+        topic = inv.get("topic") or "love"
+        question = build_compat_question(topic, inviter_name, invitee_name, full=True)
+        wait_msg = await bot.send_message(chat_id, "✍️ Таролог раскладывает 5 карт для вас двоих…")
+        result = await compat_generate(question, cards, roles)
+        try:
+            await bot.delete_message(chat_id, wait_msg.message_id)
+        except Exception:
+            pass
+    except Exception:
+        compat_store.release(invite_id, chat_id)
+        raise
+    if not result:
+        compat_store.release(invite_id, chat_id)
+        await bot.send_message(
+            chat_id,
+            "Сейчас высокая нагрузка на нейросеть — расклад не собрался. "
+            "Нажми «Посмотреть» ещё раз через 15–30 минут, приглашение сохранено.",
+            reply_markup=InlineKeyboardBuilder()
+            .row(types.InlineKeyboardButton(text="👀 Посмотреть", callback_data=f"compat_view:{invite_id}"))
+            .as_markup(),
+        )
+        return False
+    texts, summary = result
+    done = compat_store.complete(
+        invite_id, chat_id, cards=cards, roles=roles, texts=texts, summary=summary
+    )
+    if not done:
+        return False
+    try:
+        user_questions_log.append(
+            chat_id, kind="compat_full", question=f"Совместимость ({compat_topic_label(topic)}): {inviter_name}"
+        )
+    except Exception as e:
+        logging.warning("compat full log append failed: %s", e)
+    header = f"💞 Ваш полный расклад · {compat_topic_label(topic)}\n{inviter_name} + {invitee_name}"
+    await compat_send_spread(
+        chat_id, cards, roles, texts, summary, header=header, reply_markup=compat_after_full_kb(invite_id)
+    )
+    inviter_id = int(inv.get("inviter_id") or 0)
+    if inviter_id and inviter_id != chat_id:
+        try:
+            await compat_send_spread(
+                inviter_id,
+                cards,
+                roles,
+                texts,
+                summary,
+                header=f"{invitee_name} откликнулся(ась) 💞 Ваш полный расклад\n{inviter_name} + {invitee_name}",
+                reply_markup=compat_after_full_kb(invite_id),
+                paced=False,
+            )
+        except Exception as e:
+            logging.warning("compat full to inviter %s failed: %s", inviter_id, e)
+            mark_unreachable_from_exc(inviter_id, e)
+    analytics.track(
+        "compat_full_done",
+        user_id=chat_id,
+        properties={"invite": invite_id, "topic": topic, "inviter_id": inviter_id},
+        dedupe_key=f"compat-full:{invite_id}",
+    )
+    try:
+        await on_user_completed_reading(chat_id)
+    except Exception:
+        pass
+    return True
+
+
+async def compat_replay_full(chat_id: int, inv: Dict[str, Any]) -> None:
+    full = inv.get("full") or {}
+    cards = full.get("cards") or []
+    if not cards:
+        await bot.send_message(chat_id, "Расклад уже открыт 💞", reply_markup=compat_new_kb())
+        return
+    await compat_send_spread(
+        chat_id,
+        cards,
+        full.get("roles") or [],
+        full.get("texts") or [],
+        full.get("summary") or "",
+        header=(
+            "Этот расклад уже открыт — вот он ещё раз 💞\n"
+            f"{inv.get('inviter_name')} + {inv.get('invitee_name')}"
+        ),
+        reply_markup=compat_after_full_kb(inv["id"]),
+        paced=False,
+    )
+
+
+def _compat_member(inv: Optional[Dict[str, Any]], user_id: int) -> bool:
+    if not inv:
+        return False
+    return int(user_id) in {int(inv.get("inviter_id") or 0), int(inv.get("invitee_id") or 0)}
+
+
+def _compat_story_path(invite_id: str) -> str:
+    folder = os.path.join(BOT_DATA_DIR, "compat_stories")
+    os.makedirs(folder, exist_ok=True)
+    return os.path.join(folder, f"{invite_id}.jpg")
+
+
+@dp.callback_query(F.data.startswith("compat_story:"))
+async def compat_story_cb(call: CallbackQuery):
+    await call.answer("Готовлю картинку…")
+    invite_id = call.data.split(":", 1)[1]
+    chat_id = call.message.chat.id
+    inv = compat_store.get(invite_id)
+    if not _compat_member(inv, call.from_user.id) or inv.get("status") != "completed":
+        return
+    full = inv.get("full") or {}
+    path = _compat_story_path(invite_id)
+    try:
+        if not os.path.isfile(path):
+            await asyncio.to_thread(
+                generate_compat_story_card,
+                path,
+                first_name=inv.get("inviter_name") or "",
+                second_name=inv.get("invitee_name") or "",
+                topic=compat_topic_label(inv.get("topic") or "love"),
+                card_paths=[c.get("path") for c in (full.get("cards") or [])[:3]],
+                phrase=compat_story_phrase(full.get("summary") or ""),
+            )
+        await bot.send_photo(
+            chat_id,
+            FSInputFile(path),
+            caption="Сохрани картинку и выложи в сторис 💞 Размер уже подходит.",
+        )
+        analytics.track("compat_story_share", user_id=chat_id, properties={"invite": invite_id})
+    except Exception as e:
+        logging.warning("compat story failed %s: %s", invite_id, e)
+        await bot.send_message(chat_id, "Не получилось собрать картинку, попробуй ещё раз чуть позже.")
+
+
+@dp.callback_query(F.data.startswith("compat_live:"))
+async def compat_live_cb(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    invite_id = call.data.split(":", 1)[1]
+    analytics.track("compat_live_click", user_id=call.message.chat.id, properties={"invite": invite_id})
+    await state.clear()
+    await send_consultation_invite(call.message.chat.id)
+
+
+def compat_funnel_counts(days: int = 7) -> Dict[str, Dict[str, int]]:
+    start = (now_moscow().date() - timedelta(days=days - 1)).isoformat()
+    from contextlib import closing
+
+    out: Dict[str, Dict[str, int]] = {}
+    try:
+        with closing(analytics._connect()) as conn:
+            rows = conn.execute(
+                "SELECT event_name, COUNT(*), COUNT(DISTINCT user_id) FROM events "
+                "WHERE event_name LIKE 'compat\\_%' ESCAPE '\\' AND local_date >= ? "
+                "GROUP BY event_name",
+                (start,),
+            ).fetchall()
+        for name, events, users in rows:
+            out[str(name)] = {"events": int(events or 0), "users": int(users or 0)}
+    except Exception as e:
+        logging.warning("compat funnel counts failed: %s", e)
+    return out
+
 
 @dp.message(lambda message: message.text == '🔮✨Чувства Мысли Действия ✨🔮')
 async def ask_roman_quest(message: types.Message, state: FSMContext):
@@ -9621,6 +10384,11 @@ def classic_spreads_kb() -> types.InlineKeyboardMarkup:
     )
     kb.row(
         types.InlineKeyboardButton(
+            text="💞 Совместимость", callback_data="classic_compat"
+        )
+    )
+    kb.row(
+        types.InlineKeyboardButton(
             text="💰 Деньги", callback_data="classic_money"
         )
     )
@@ -9678,6 +10446,13 @@ CLASSIC_PREVIEWS = {
         "Что партнёр чувствует, о чём думает и какие шаги может сделать.\n"
         "Карты: 3 · Списание: 1 расклад · нужно имя и тип отношений.",
         "classic_go_romantic",
+    ),
+    "compat": (
+        "💞 Совместимость",
+        "Ты, второй человек и ваша связь — в любви, дружбе или работе. "
+        "Потом можно позвать его(её): обоим бесплатно откроется полный расклад из 5 карт.\n"
+        "Карты: 3 · Списание: 1 расклад · нужно только имя.",
+        "classic_go_compat",
     ),
     "money": (
         "💰 Деньги",
@@ -13058,6 +13833,7 @@ def main_kb(chat_id):
     builder.row(button_ask_question)
     builder.row(button_quick_yesno)
     builder.row(button_classic)
+    builder.row(types.KeyboardButton(text=COMPAT_BUTTON))
     builder.row(types.KeyboardButton(text=PUBLIC_DECK_BUTTON))
     builder.row(button_more, consultation_reply_button())
     if PAYMENTS_ENABLED:

@@ -1035,3 +1035,202 @@ def generate_share_card_from_avatar(
     finally:
         temporary.unlink(missing_ok=True)
     return output
+
+
+# ------------------------------------------------------------------ сторис 9:16
+
+STORY_WIDTH = 1080
+STORY_HEIGHT = 1920
+STORY_SAFE_TOP = 250
+STORY_SAFE_BOTTOM = 250
+STORY_BOT_HANDLE = "@Roxanaametist_Taro_bot"
+
+
+def _font_covers(font: ImageFont.FreeTypeFont | ImageFont.ImageFont, text: str) -> bool:
+    """True, если в шрифте есть глифы для всех букв (кириллица в Project Space может отсутствовать)."""
+    try:
+        notdef = font.getmask("\uffff").tobytes()
+    except Exception:
+        return True
+    for ch in {c for c in str(text or "") if c.isalpha()}:
+        try:
+            if font.getmask(ch).tobytes() == notdef:
+                return False
+        except Exception:
+            return False
+    return True
+
+
+def _story_centered(
+    canvas: Image.Image,
+    y: int,
+    text: str,
+    *,
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    fill: tuple[int, int, int] = INK,
+    weight_x: int = 0,
+) -> int:
+    probe = ImageDraw.Draw(canvas)
+    w = _text_width(probe, text, font)
+    _draw_soft_glow_text(
+        canvas,
+        ((STORY_WIDTH - w) / 2, y),
+        text,
+        font=font,
+        fill=fill,
+        glow_alpha=60,
+        blur_radius=2.0,
+        weight_x=weight_x,
+    )
+    box = probe.textbbox((0, 0), text, font=font)
+    return int(box[3] - box[1])
+
+
+def generate_compat_story_card(
+    output_path: str | Path,
+    *,
+    first_name: str,
+    second_name: str,
+    topic: str,
+    card_paths: Iterable[str],
+    phrase: str,
+    bot_handle: str = STORY_BOT_HANDLE,
+) -> Path:
+    """Вертикальная карточка 1080×1920 для сторис «Совместимость».
+
+    Всё значимое — между 250 px сверху и снизу (безопасная зона Instagram/Telegram).
+    Существующую карточку 1080×1350 (generate_share_card) не трогает.
+    """
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    paths = [Path(p) for p in card_paths if p][:3]
+    canvas = Image.new("RGBA", (STORY_WIDTH, STORY_HEIGHT), (*BG, 255))
+    draw = ImageDraw.Draw(canvas)
+    display_font = resolve_share_display_font()
+    body_font = resolve_share_body_font()
+    max_w = STORY_WIDTH - 2 * 110
+
+    y = STORY_SAFE_TOP + 10
+    # Ракушка + бренд
+    logo_size = 96
+    path = _shell_mark_path()
+    if path is not None:
+        try:
+            with Image.open(path) as source:
+                mark = ImageOps.contain(
+                    source.convert("RGBA"), (logo_size, logo_size), Image.Resampling.LANCZOS
+                )
+            canvas.paste(mark, ((STORY_WIDTH - mark.width) // 2, y), mark)
+            y += mark.height + 18
+        except Exception:
+            pass
+    brand = "FOLLOW THE FRENSY"
+    brand_font = _fit_font(draw, brand, display_font, max_width=620, start_size=40, min_size=18)
+    y += _story_centered(canvas, y, brand, font=brand_font, fill=SILVER, weight_x=1) + 46
+
+    # «Имя + Партнёр»
+    names = f"{first_name} + {second_name}"
+    names_font_path = display_font
+    probe_font = _font(display_font, 80)
+    if not _font_covers(probe_font, names):
+        names_font_path = body_font
+    names_max_w = STORY_WIDTH - 2 * 140
+    names_font = _fit_font(draw, names, names_font_path, max_width=names_max_w, start_size=84, min_size=40)
+    nb = draw.textbbox((0, 0), names, font=names_font)
+    if nb[2] - nb[0] <= names_max_w:
+        y += _story_centered(canvas, y, names, font=names_font, weight_x=1) + 30
+    else:
+        # длинные имена — в две строки: «Имя +» / «Партнёр»
+        lines = [f"{first_name} +", str(second_name)]
+        line_font = min(
+            (_fit_font(draw, ln, names_font_path, max_width=names_max_w, start_size=72, min_size=28) for ln in lines),
+            key=lambda f: f.size,
+        )
+        for ln in lines:
+            y += _story_centered(canvas, y, ln, font=line_font, weight_x=1) + 30
+
+    # Тема
+    topic_text = f"СОВМЕСТИМОСТЬ · {str(topic or '').upper()}".strip(" ·")
+    topic_font_path = display_font if _font_covers(_font(display_font, 30), topic_text) else body_font
+    topic_font = _fit_font(draw, topic_text, topic_font_path, max_width=max_w, start_size=32, min_size=18)
+    y += _story_centered(canvas, y, topic_text, font=topic_font, fill=MUTED) + 54
+
+    # 3 карты
+    count = 3
+    gap = 30
+    card_w = (STORY_WIDTH - 2 * 105 - gap * (count - 1)) // count
+    card_h = int(round(card_w / TAROT_CARD_RATIO))
+    x = (STORY_WIDTH - (card_w * count + gap * (count - 1))) // 2
+    for index in range(count):
+        box = (x, y, x + card_w, y + card_h)
+        image = _card_crop(paths[index], (card_w, card_h)) if index < len(paths) else None
+        if image is not None:
+            _card_paste(canvas, image, box)
+        else:
+            draw.rectangle(box, fill=CARD_SLOT, outline=SILVER, width=2)
+        x += card_w + gap
+    y += card_h + 26
+
+    # Херувимы с драпировкой и фраза на ткани
+    handle_font = _fit_font(draw, bot_handle, body_font, max_width=max_w, start_size=40, min_size=24)
+    handle_h = int(getattr(handle_font, "size", 36) * 1.3)
+    bottom_limit = STORY_HEIGHT - STORY_SAFE_BOTTOM - handle_h - 24
+    strip = _load_angels_holding_drapery(STORY_WIDTH - 2 * 70)
+    quote = " ".join(str(phrase or "").split())
+    if strip is not None and bottom_limit - y > 200:
+        max_h = bottom_limit - y
+        if strip.height > max_h:
+            scale = max_h / strip.height
+            strip = strip.resize(
+                (max(1, int(strip.width * scale)), max_h), Image.Resampling.LANCZOS
+            )
+        strip_w, strip_h = strip.size
+        strip_x = (STORY_WIDTH - strip_w) // 2
+        canvas.paste(strip, (strip_x, y), strip)
+        quote_max_w = max(260, int(strip_w * 0.42))
+        quote_area_h = max(72, int(strip_h * 0.28))
+        quote_font = _font(body_font, 24)
+        quote_lines: list[str] = []
+        line_step = 30
+        for size in range(28, 13, -1):
+            quote_font = _font(body_font, size)
+            line_step = max(18, size + 6)
+            max_lines = max(2, quote_area_h // line_step)
+            quote_lines = _wrap(draw, quote, quote_font, quote_max_w, max_lines)
+            if len(quote_lines) * line_step <= quote_area_h and (
+                not quote_lines or not quote_lines[-1].endswith("…")
+            ):
+                break
+        _paste_quote_on_drapery(
+            canvas,
+            strip=strip,
+            strip_x=strip_x,
+            strip_y=y,
+            strip_w=strip_w,
+            strip_h=strip_h,
+            lines=quote_lines,
+            font=quote_font,
+            line_step=line_step,
+        )
+    elif quote:
+        qf = _font(body_font, 34)
+        for line in _wrap(draw, quote, qf, max_w, 3):
+            y += _story_centered(canvas, y, line, font=qf) + 12
+
+    # Ник бота — нижний край безопасной зоны
+    _story_centered(
+        canvas,
+        STORY_HEIGHT - STORY_SAFE_BOTTOM - handle_h,
+        bot_handle,
+        font=handle_font,
+        fill=SILVER,
+    )
+
+    rgb = canvas.convert("RGB")
+    temporary = output.with_suffix(output.suffix + ".tmp")
+    try:
+        rgb.save(temporary, format="JPEG", quality=92, optimize=True)
+        os.replace(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return output

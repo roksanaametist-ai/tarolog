@@ -16,6 +16,7 @@ class StartAttribution:
     partner_code: str | None = None
     campaign_code: str | None = None
     share_pack_id: str | None = None
+    compat_invite_id: str | None = None
 
     def properties(self) -> dict:
         return {key: value for key, value in asdict(self).items() if value is not None}
@@ -70,6 +71,11 @@ def parse_start_attribution(
                 referrer_id=int(head),
                 share_pack_id=pack_id,
             )
+    if raw.startswith("compat_"):
+        invite_id = raw[7:]
+        if re.fullmatch(r"[A-Za-z0-9_-]{6,40}", invite_id):
+            return StartAttribution("compat", raw, compat_invite_id=invite_id)
+        return StartAttribution("invalid", raw)
     if raw.startswith("p_"):
         parts = raw[2:].split("_", 1)
         try:
