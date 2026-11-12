@@ -37,6 +37,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from analytics import AnalyticsStore, build_admin_dashboard
+from analytics.dashboard import SECTIONS as ADMIN_DASH_SECTIONS, build_section as build_admin_dash_section, build_summary as build_admin_dash_summary
 from public_card import (
     PublicCardStore,
     CARD_BACK_PATH as PUBLIC_CARD_BACK_PATH,
@@ -514,6 +515,7 @@ READING_KIND_LABELS = {
     "yesno_quick": "Быстрое Да/Нет",
     "day": "Карта дня",
     "tomorrow": "Карта на завтра",
+    "week": "Прогноз недели",
     "romantic": "Чувства Мысли Действия",
     "compat": "Совместимость",
     "compat_full": "Совместимость (полный)",
@@ -4825,7 +4827,7 @@ def _format_kind_counts(counts: Dict[str, int]) -> str:
     return "\n".join(lines)
 
 
-def build_admin_dashboard_html() -> str:
+def _reload_admin_sources() -> None:
     try:
         user_data.data = user_data.load_data()
         logger.logs = logger._load_logs()
@@ -4837,13 +4839,64 @@ def build_admin_dashboard_html() -> str:
     except Exception as exc:
         logging.warning("admin dashboard reload failed: %s", exc)
 
+
+def _admin_snapshot() -> dict:
     snapshot = analytics.snapshot()
     snapshot["operational_storage"] = {
         "integrity": operational_store.integrity_check(),
         "documents": len(operational_store.list_documents()),
     }
-    html_out = build_admin_dashboard(
-        snapshot,
+    return snapshot
+
+
+def max_bot_activity() -> Optional[dict]:
+    """Люди в боте MAX за 7 дней и за неделю до того (из logs_max.json, только чтение)."""
+    path = data_file("logs_max.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            logs = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(logs, list):
+        return None
+    now = datetime.now()
+    cur_from = (now - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+    prev_from = (now - timedelta(days=14)).strftime("%Y-%m-%d %H:%M:%S")
+    cur, prev = set(), set()
+    for item in logs:
+        if not isinstance(item, dict):
+            continue
+        d = str(item.get("date") or "")
+        uid = item.get("user_id")
+        if d >= cur_from:
+            cur.add(uid)
+        elif d >= prev_from:
+            prev.add(uid)
+    return {"users": len(cur), "users_prev": len(prev)}
+
+
+def build_admin_dashboard_html() -> str:
+    """Короткая сводка за 7 дней (главный экран /admin123)."""
+    _reload_admin_sources()
+    return build_admin_dash_summary(
+        _admin_snapshot(),
+        users=user_data.get_aggregate_stats(),
+        reviews=reviews_store.count_by_status(),
+        max_stats=max_bot_activity(),
+    )
+
+
+def build_admin_section_html(name: str) -> str:
+    _reload_admin_sources()
+    compat_html = ""
+    if name == "readings":
+        try:
+            compat_html = build_compat_funnel_html(compat_funnel_counts(7), days=7)
+        except Exception as exc:
+            logging.warning("compat funnel failed: %s", exc)
+    return build_admin_dash_section(
+        name,
+        _admin_snapshot(),
         users=user_data.get_aggregate_stats(),
         reviews=reviews_store.count_by_status(),
         leads=consultation_leads.get_admin_stats(days=7),
@@ -4851,16 +4904,30 @@ def build_admin_dashboard_html() -> str:
         nurture=payment_nurture.get_funnel_stats(),
         payment_data=load_payment_stats() or {},
         kind_labels=READING_KIND_LABELS,
-        public_deck=public_card_store.get_admin_stats(days=7),
+        compat_html=compat_html,
         secret_stats_cmd=ADMIN_CMD_TOTAL_USERS or None,
     )
-    try:
-        html_out = html_out.rstrip() + "\n\n" + build_compat_funnel_html(
-            compat_funnel_counts(7), days=7
-        )
-    except Exception as exc:
-        logging.warning("compat funnel failed: %s", exc)
-    return html_out
+
+
+def admin_dashboard_kb(current: Optional[str] = None) -> types.InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for key, label in ADMIN_DASH_SECTIONS.items():
+        if key != current:
+            kb.button(text=label, callback_data=f"admin_dash:{key}")
+    if current:
+        kb.button(text="📊 Сводка", callback_data="admin_dash:summary")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
+async def send_admin_dashboard(chat_id: int, section: Optional[str] = None) -> None:
+    html_out = build_admin_section_html(section) if section else build_admin_dashboard_html()
+    kb = admin_dashboard_kb(section)
+    if len(html_out) <= 4000:
+        await bot.send_message(chat_id, html_out, parse_mode=ParseMode.HTML, reply_markup=kb)
+        return
+    await send_html_chunks(chat_id, html_out)
+    await bot.send_message(chat_id, "Разделы:", reply_markup=kb)
 
 
 
@@ -13165,7 +13232,7 @@ async def admin_dashboard(message: types.Message, state: FSMContext):
     logger.log_command(message.chat.id, message.text or "/admin123")
     await state.clear()
     await send_admin_panel(message.chat.id, answer=message.answer)
-    await send_html_chunks(message.chat.id, build_admin_dashboard_html())
+    await send_admin_dashboard(message.chat.id)
     await restore_main_menu(message.chat.id)
 
 
@@ -13175,8 +13242,20 @@ async def admin_stats_cb(call: CallbackQuery):
         await call.answer("Нет доступа", show_alert=True)
         return
     await call.answer()
-    await send_html_chunks(call.message.chat.id, build_admin_dashboard_html())
+    await send_admin_dashboard(call.message.chat.id)
     await restore_main_menu(call.from_user.id)
+
+
+@dp.callback_query(F.data.startswith("admin_dash:"))
+async def admin_dash_section_cb(call: CallbackQuery):
+    if not is_bot_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    await call.answer()
+    section = (call.data or "").split(":", 1)[1]
+    if section != "summary" and section not in ADMIN_DASH_SECTIONS:
+        return
+    await send_admin_dashboard(call.message.chat.id, None if section == "summary" else section)
 
 
 @dp.callback_query(F.data == "admin_self_unlim")

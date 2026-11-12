@@ -563,6 +563,75 @@ class AnalyticsStore:
             ).fetchall()
         return {str(row["property_value"]): int(row["n"]) for row in rows}
 
+    def _broadcast_response(
+        self, days: int, today: date, *, window_days: int = 3
+    ) -> dict[str, dict[str, int]]:
+        """Per broadcast campaign: recipients and how many opened the bot afterwards.
+
+        "Opened" = any own action (not another broadcast/push) within
+        ``window_days`` after the message was sent.
+        """
+        start = self._period_start(days, today)
+        sql = """
+            SELECT COALESCE(json_extract(b.properties, '$.campaign'), 'без названия') AS campaign,
+                   COUNT(DISTINCT b.user_id) AS sent,
+                   COUNT(DISTINCT CASE WHEN EXISTS (
+                        SELECT 1 FROM events e
+                        WHERE e.user_id = b.user_id
+                          AND e.local_date >= b.local_date
+                          AND julianday(e.occurred_at) > julianday(b.occurred_at)
+                          AND julianday(e.occurred_at) <= julianday(b.occurred_at) + ?
+                          AND e.event_name NOT LIKE 'broadcast_%'
+                          AND e.event_name NOT LIKE 'winback_%'
+                          AND e.event_name NOT LIKE 'tomorrow_push_%'
+                          AND e.event_name NOT LIKE 'admin_%'
+                   ) THEN b.user_id END) AS returned,
+                   MAX(b.local_date) AS last_date
+            FROM events b
+            WHERE b.event_name = 'broadcast_sent'
+              AND b.local_date BETWEEN ? AND ?
+              AND b.user_id IS NOT NULL
+            GROUP BY campaign
+            ORDER BY last_date DESC
+        """
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                sql, (float(window_days), start, today.isoformat())
+            ).fetchall()
+        return {
+            str(row["campaign"]): {
+                "sent": int(row["sent"] or 0),
+                "returned": int(row["returned"] or 0),
+                "last_date": str(row["last_date"] or ""),
+            }
+            for row in rows
+        }
+
+    def _abandoned_checkouts(self, days: int, today: date) -> dict[str, int]:
+        """Users who got a payment link in the period and have no successful payment after it."""
+        start = self._period_start(days, today)
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(DISTINCT c.user_id) AS got_link,
+                       COUNT(DISTINCT CASE WHEN NOT EXISTS (
+                           SELECT 1 FROM events p
+                           WHERE p.user_id = c.user_id
+                             AND p.event_name = 'payment_succeeded'
+                             AND p.local_date >= c.local_date
+                       ) THEN c.user_id END) AS abandoned
+                FROM events c
+                WHERE c.event_name = 'payment_checkout'
+                  AND c.local_date BETWEEN ? AND ?
+                  AND c.user_id IS NOT NULL
+                """,
+                (start, today.isoformat()),
+            ).fetchone()
+        return {
+            "got_link": int(row["got_link"] or 0),
+            "abandoned": int(row["abandoned"] or 0),
+        }
+
     def _funnel_breakdown(
         self,
         property_name: str,
@@ -736,6 +805,14 @@ class AnalyticsStore:
             "retention_d1": self._retention(1, today),
             "retention_d7": self._retention(7, today),
             "resurrected_7d": self._resurrected(7, today),
+            # the 7 days before the current 7-day window, for ↑/↓ comparison
+            "prev_7d": self._period_metrics(7, today - timedelta(days=7)),
+            "broadcasts_7d": self._broadcast_response(7, today),
+            "abandoned_checkouts_7d": self._abandoned_checkouts(7, today),
+            "abandoned_checkouts_30d": self._abandoned_checkouts(30, today),
+            "acquisition_sources_7d": self._property_breakdown(
+                "bot_started", "source", days=7, today=today, only_new=True
+            ),
             "acquisition_sources_30d": self._property_breakdown(
                 "bot_started", "source", days=30, today=today, only_new=True
             ),
