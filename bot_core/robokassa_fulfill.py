@@ -311,6 +311,43 @@ def _mark_fulfilled(inv_id: int) -> None:
             robokassa_store._save(path, data)
 
 
+def _track_payment_succeeded(
+    inv_id: int,
+    chat_id: int,
+    plan_key: str,
+    amount_kopecks: int,
+    kind: str,
+    seed: Optional[dict],
+    *,
+    occurred_at: Any = None,
+) -> bool:
+    """Write payment_succeeded to analytics.sqlite3 (admin dashboard). Never raises."""
+    try:
+        from analytics.store import AnalyticsStore
+
+        u = seed if isinstance(seed, dict) else {}
+        store = AnalyticsStore(_data_dir() / "analytics.sqlite3")
+        return store.track(
+            "payment_succeeded",
+            user_id=int(chat_id),
+            properties={
+                "payment_id": f"robokassa:{inv_id}",
+                "provider": "robokassa",
+                "plan": plan_key or "unknown",
+                "amount_kopecks": int(amount_kopecks),
+                "recurring": kind != "parent",
+                "source": str(u.get("acquisition_source") or "unknown"),
+                "partner": str(u.get("partner_code") or ""),
+                "campaign": str(u.get("campaign_code") or ""),
+            },
+            occurred_at=occurred_at,
+            dedupe_key=f"payment-success:robokassa:{inv_id}",
+        )
+    except Exception as exc:
+        logger.warning("analytics payment_succeeded failed inv_id=%s: %s", inv_id, exc)
+        return False
+
+
 def fulfill_invoice(inv_id: int, *, out_sum: Optional[str] = None) -> dict[str, Any]:
     """
     Idempotent grant for paid InvId.
@@ -371,6 +408,7 @@ def fulfill_invoice(inv_id: int, *, out_sum: Optional[str] = None) -> dict[str, 
         _bump_payment_stats(amount_kopecks, plan_key)
     except OSError:
         pass
+    _track_payment_succeeded(inv_id, chat_id, plan_key, amount_kopecks, kind, seed)
     _mark_nurture_done(chat_id)
     _mark_fulfilled(inv_id)
 
