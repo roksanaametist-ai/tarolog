@@ -1046,6 +1046,102 @@ STORY_SAFE_BOTTOM = 250
 STORY_BOT_HANDLE = "@Roxanaametist_Taro_bot"
 
 
+SKY_BASE = (3, 3, 8)  # #030308 — как .bg-stars на сайте
+# (файл, верх в долях высоты, ширина в долях ширины, левый край) — как .bg-cloud--* на сайте
+_SKY_CLOUDS = (
+    ("cloud-1.webp", 0.06, 0.40, 0.58),
+    ("cloud-1.webp", 0.14, 0.27, -0.08),
+    ("cloud-2.webp", 0.31, 0.48, 0.62),
+    ("cloud-3.webp", 0.46, 0.36, -0.12),
+    ("cloud-2.webp", 0.58, 0.32, 0.74),
+    ("cloud-5.webp", 0.84, 0.40, 0.04),
+)
+
+
+def _sky_dir() -> Path | None:
+    root = _project_root()
+    for path in (
+        root / "static" / "share" / "sky",
+        Path("/root/tarolog/static/share/sky"),
+    ):
+        if (path / "star-lg.webp").exists():
+            return path
+    return None
+
+
+def _radial(size: tuple[int, int], cx: float, cy: float, rx: float, ry: float, rgba: tuple) -> Image.Image:
+    """Мягкое эллиптическое пятно (аналог radial-gradient ... transparent)."""
+    w, h = size
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    d = np.sqrt(((xx - cx * w) / (rx * w)) ** 2 + ((yy - cy * h) / (ry * h)) ** 2)
+    a = np.clip(1.0 - d / 0.7, 0.0, 1.0) * rgba[3]
+    arr = np.zeros((h, w, 4), dtype=np.uint8)
+    arr[..., 0], arr[..., 1], arr[..., 2] = rgba[0], rgba[1], rgba[2]
+    arr[..., 3] = (a * 255).astype(np.uint8)
+    return Image.fromarray(arr, "RGBA")
+
+
+def sky_background(size: tuple[int, int] = (1080, 1920), *, seed: int = 0) -> Image.Image:
+    """Фон «как на сайте»: тёмное небо, золотые звёздочки-спрайты, облака, лёгкое затемнение.
+
+    Если картинок нет (например, на сервере их забыли залить) — просто тёмный фон.
+    """
+    import random
+
+    w, h = size
+    rnd = random.Random(seed)
+    canvas = Image.new("RGBA", size, (*SKY_BASE, 255))
+    canvas.alpha_composite(_radial(size, 0.5, 0.28, 0.55, 0.45, (90, 110, 160, 0.10)))
+    canvas.alpha_composite(_radial(size, 0.2, 0.75, 0.50, 0.40, (40, 90, 120, 0.07)))
+    sky = _sky_dir()
+    if sky is None:
+        return canvas
+
+    # Звёзды: те же спрайты и разброс размеров, что в stars-bg.js (масштаб ×2.6 под 1080 px)
+    k = w / 414.0
+    sprites = []
+    for name in ["star-lg", "star-sm"] + [f"star-{i}" for i in range(1, 11)]:
+        try:
+            with Image.open(sky / f"{name}.webp") as im:
+                sprites.append(im.convert("RGBA"))
+        except Exception:
+            continue
+    if sprites:
+        for _ in range(95):
+            idx = rnd.randrange(len(sprites))
+            img = sprites[idx]
+            px = rnd.uniform(10, 28)
+            if idx == 0:
+                px = rnd.uniform(22, 42)
+            elif idx == 1:
+                px = rnd.uniform(8, 16)
+            side = max(4, int(px * k))
+            star = ImageOps.contain(img, (side, side), Image.Resampling.LANCZOS)
+            alpha = rnd.uniform(0.4, 0.95)
+            if alpha < 1:
+                star.putalpha(star.getchannel("A").point(lambda v, a=alpha: int(v * a)))
+            canvas.alpha_composite(star, (rnd.randrange(0, w), rnd.randrange(0, h)))
+
+    # Облака
+    for name, top, width, left in _SKY_CLOUDS:
+        try:
+            with Image.open(sky / name) as im:
+                cloud = im.convert("RGBA")
+        except Exception:
+            continue
+        cw = int(width * w)
+        cloud = cloud.resize((cw, max(1, int(cloud.height * cw / cloud.width))), Image.Resampling.LANCZOS)
+        # paste с маской допускает выход за край (фон непрозрачный — результат как наложение)
+        canvas.paste(cloud, (int(left * w), int(top * h)), cloud)
+
+    # Затемнение для читаемости текста (как .bg-dim)
+    grad = np.linspace(0.28, 0.55, h, dtype=np.float32)[:, None].repeat(w, axis=1)
+    dim = np.zeros((h, w, 4), dtype=np.uint8)
+    dim[..., 3] = (grad * 255).astype(np.uint8)
+    canvas.alpha_composite(Image.fromarray(dim, "RGBA"))
+    return canvas
+
+
 def _font_covers(font: ImageFont.FreeTypeFont | ImageFont.ImageFont, text: str) -> bool:
     """True, если в шрифте есть глифы для всех букв (кириллица в Project Space может отсутствовать)."""
     try:
@@ -1104,7 +1200,10 @@ def generate_compat_story_card(
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     paths = [Path(p) for p in card_paths if p][:3]
-    canvas = Image.new("RGBA", (STORY_WIDTH, STORY_HEIGHT), (*BG, 255))
+    import zlib
+
+    seed = zlib.crc32(f"{first_name}|{second_name}|{output.stem}".encode("utf-8"))
+    canvas = sky_background((STORY_WIDTH, STORY_HEIGHT), seed=seed)
     draw = ImageDraw.Draw(canvas)
     display_font = resolve_share_display_font()
     body_font = resolve_share_body_font()
@@ -1142,10 +1241,25 @@ def generate_compat_story_card(
     else:
         # длинные имена — в две строки: «Имя +» / «Партнёр»
         lines = [f"{first_name} +", str(second_name)]
-        line_font = min(
-            (_fit_font(draw, ln, names_font_path, max_width=names_max_w, start_size=72, min_size=28) for ln in lines),
-            key=lambda f: f.size,
-        )
+
+        def _lines_font(path):
+            return min(
+                (_fit_font(draw, ln, path, max_width=names_max_w, start_size=72, min_size=28) for ln in lines),
+                key=lambda f: f.size,
+            )
+
+        def _fits(f):
+            return all(draw.textbbox((0, 0), ln, font=f)[2] - draw.textbbox((0, 0), ln, font=f)[0] <= names_max_w for ln in lines)
+
+        line_font = _lines_font(names_font_path)
+        if not _fits(line_font) and names_font_path != body_font:
+            # широкий фирменный шрифт не влез даже мелко — узкий Cormorant
+            line_font = _lines_font(body_font)
+        if not _fits(line_font):
+            line_font = min(
+                (_fit_font(draw, ln, body_font, max_width=names_max_w, start_size=56, min_size=16) for ln in lines),
+                key=lambda f: f.size,
+            )
         for ln in lines:
             y += _story_centered(canvas, y, ln, font=line_font, weight_x=1) + 30
 

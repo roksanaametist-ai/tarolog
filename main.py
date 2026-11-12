@@ -8148,7 +8148,7 @@ def compat_after_short_kb(invite: Dict[str, Any]) -> types.InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.row(
         types.InlineKeyboardButton(
-            text=f"📩 Позвать {invite.get('partner_name')} — откроется полный расклад",
+            text=f"📩 Позвать его(её) — откроется полный расклад",
             callback_data=f"compat_inv:{invite['id']}",
         )
     )
@@ -8160,7 +8160,7 @@ async def compat_share_kb(invite: Dict[str, Any]) -> types.InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.row(
         types.InlineKeyboardButton(
-            text=f"📩 Позвать {invite.get('partner_name')}",
+            text=f"📩 Позвать его(её)",
             url=await compat_share_url(invite),
         )
     )
@@ -8471,7 +8471,7 @@ async def run_compat_short(
         await pause_reading(READING_PACE_BEFORE_SHARE)
         msg = await bot.send_message(
             chat_id,
-            f"Это короткий взгляд. Позови {partner_name} — и вам обоим бесплатно откроется "
+            f"Это короткий взгляд. Позови его(её) — и вам обоим бесплатно откроется "
             "полный расклад из 5 карт: что вас связывает, что мешает и куда всё идёт.",
             reply_markup=compat_after_short_kb(invite),
         )
@@ -8503,7 +8503,7 @@ async def compat_invite_cb(call: CallbackQuery):
     link = await compat_invite_link(invite_id)
     await bot.send_message(
         chat_id,
-        f"Нажми кнопку и выбери {invite.get('partner_name')} в Telegram — придёт такое сообщение:\n\n"
+        f"Нажми кнопку и выбери этого человека в Telegram — придёт такое сообщение:\n\n"
         + compat_invite_message_text(invite.get("inviter_name") or "", link)
         + "\n\nСсылка работает 30 дней и открывает один полный расклад для вас двоих.",
         reply_markup=await compat_share_kb(invite),
@@ -8524,7 +8524,7 @@ async def compat_show_invite(chat_id: int, invite_id: str, state: FSMContext, *,
         return
     if res.status == "self":
         await send(
-            f"Это твоё приглашение — отправь его {inv.get('partner_name')} 💞",
+            f"Это твоё приглашение — перешли его тому, кого зовёшь 💞",
             reply_markup=await compat_share_kb(inv),
         )
         return

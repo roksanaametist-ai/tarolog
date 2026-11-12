@@ -139,7 +139,7 @@ def test_open_own_link():
     inv_id = make_invite(a)
     before = balance(a)
     open_link(a, inv_id, name="Роксана")
-    assert "Это твоё приглашение — отправь его Анна 💞" in session.texts(a)[-1]
+    assert "Это твоё приглашение — перешли его тому, кого зовёшь 💞" in session.texts(a)[-1]
     assert main.compat_store.get(inv_id)["status"] != "completed"
     assert balance(a) == before
 
