@@ -28,4 +28,4 @@ ssh $target "chmod 600 ${AppDir}/.env; sudo bash ${AppDir}/deploy/hshp/install.s
 Write-Host "==> Проверка..."
 ssh $target "curl -sf http://127.0.0.1:5000/health; systemctl is-active targpt-bot targpt-landing"
 
-Write-Host "Готово. Откройте https://followthefrensy.com/"
+Write-Host "Готово. Откройте https://followthefrensy.ru/"

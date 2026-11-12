@@ -1,58 +1,15 @@
-# Деплой на HSHP VPS (followthefrensy.com)
+# Деплой на HSHP VPS (followthefrensy.ru)
 
-**HSHP** ([hshp.host](https://hshp.host/)) — VPS с root-доступом. Канонический домен: `followthefrensy.com`. Старый `followthefrensy.ru` указывает на тот же сервер и после переезда бота редиректится на `.com`.
+**HSHP** ([hshp.host](https://hshp.host/)) — VPS с root-доступом. Домен `followthefrensy.ru` уже указывает на этот сервер:
 
-IP сервера (A-запись): `37.46.18.192`
-
-| URL | Назначение |
-|-----|------------|
-| `https://followthefrensy.com/cards` | WebApp карт |
-| `https://followthefrensy.com/yesno` | WebApp да/нет |
-| `https://followthefrensy.com/` | лендинг |
-| Telegram-бот | systemd на VPS |
-
-## Переезд .ru → .com
-
-1. Купи `followthefrensy.com` (регистратор любой: Cloudflare, Namecheap, Рег.ру).
-2. DNS, тип **A**:
-   - `@` → `37.46.18.192`
-   - `www` → `37.46.18.192`
-   TTL 300. Прокси Cloudflare **выключи** (серое облако), пока не выпустишь сертификат.
-3. Подожди, пока `nslookup followthefrensy.com` покажет этот IP.
-4. На VPS (не затирая `/cards` и `/yesno`):
-
-```bash
-sudo nano /etc/nginx/sites-available/followthefrensy.ru
-# добавь server_name followthefrensy.com www.followthefrensy.com
-# образец: deploy/hshp/nginx-followthefrensy.conf
-sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d followthefrensy.com -d www.followthefrensy.com
-```
-
-5. В `/opt/targpt/.env`:
-
-```env
-LANDING_PUBLIC_URL=https://followthefrensy.com
-CARDS_WEBAPP_URL=https://followthefrensy.com/cards
-YESNO_WEBAPP_URL=https://followthefrensy.com/yesno
-MAX_WEBHOOK_URL=https://followthefrensy.com/max/webhook
-```
-
-```bash
-sudo systemctl restart targpt-bot targpt-landing
-```
-
-6. Проверь в браузере `.com`, WebApp карт, форму на сайте. Потом включи 301 с `.ru` на `.com` (комментарий внизу nginx-образца).
-
-В анкете РКН указывай уже `followthefrensy.com`. `.ru` можно держать как редирект.
+| URL | Статус |
+|-----|--------|
+| `https://followthefrensy.ru/cards` | WebApp уже работает |
+| `https://followthefrensy.ru/yesno` | WebApp уже работает |
+| `https://followthefrensy.ru/` | Пока дефолтная страница nginx — нужен лендинг |
+| Telegram-бот | Нужен systemd-сервис на VPS |
 
 **Amvera для этого проекта не нужен**, если всё крутится на HSHP.
-
-### YooKassa — автопродление
-
-В личном кабинете ЮKassa для магазина включите **Автоплатежи**. Без этого `save_payment_method` не сработает, и карта не сохранится.
-
-Безлимит (месяц / 3 мес / год) продлевается фоном на VPS (`recurring_billing_loop` в `main.py`). Пакет 10 запросов — разовый.
 
 ---
 
@@ -67,13 +24,7 @@ nginx (80/443)
 
 systemd
 ├── targpt-bot.service      → python main.py (polling 24/7)
-├── targpt-landing.service  → gunicorn SiteApp:app
-└── targpt-max.service      → python -m max_bot (webhook :8088)
-
-Nginx проксирует `POST /max/webhook` на `127.0.0.1:8088`.
-Образец location — в `deploy/hshp/nginx-followthefrensy.conf`.
-Юнит — `deploy/hshp/targpt-max.service`. Данные MAX лежат отдельно:
-`user_data_max.json` и остальные `*_max.json` (каталог `MAX_BOT_DATA_DIR` или `BOT_DATA_DIR`).
+└── targpt-landing.service  → gunicorn SiteApp:app
 
 /opt/targpt/data/           → JSON бота + leads.json
 ```
@@ -120,9 +71,8 @@ BOT_DATA_DIR=/opt/targpt/data
 LANDING_DATA_DIR=/opt/targpt/data
 LANDING_BOT_URL=https://t.me/Roxanaametist_Taro_bot
 LANDING_BOT_START_PARAM=site
-CARDS_WEBAPP_URL=https://followthefrensy.com/cards
-YESNO_WEBAPP_URL=https://followthefrensy.com/yesno
-LANDING_PUBLIC_URL=https://followthefrensy.com
+CARDS_WEBAPP_URL=https://followthefrensy.ru/cards
+YESNO_WEBAPP_URL=https://followthefrensy.ru/yesno
 # ... остальное из локального .env
 ```
 
@@ -168,8 +118,7 @@ sudo systemctl reload nginx
 HTTPS (если ещё нет):
 
 ```bash
-sudo certbot --nginx -d followthefrensy.com -d www.followthefrensy.com
-# старый сертификат .ru не удаляй, пока с него идёт редирект / WebApp
+sudo certbot --nginx -d followthefrensy.ru -d www.followthefrensy.ru
 ```
 
 ---
@@ -177,7 +126,7 @@ sudo certbot --nginx -d followthefrensy.com -d www.followthefrensy.com
 ## 5. Проверка
 
 - [ ] `curl -s http://127.0.0.1:5000/health` → `{"status":"ok"}`
-- [ ] `https://followthefrensy.com/` — лендинг, не «Welcome to nginx»
+- [ ] `https://followthefrensy.ru/` — лендинг, не «Welcome to nginx»
 - [ ] Форма лида → `/opt/targpt/data/leads.json`
 - [ ] Кнопка на сайте → бот с `?start=site`
 - [ ] `journalctl -u targpt-bot` → `Start polling`

@@ -79,7 +79,9 @@ def put_pending(
     amount_kopecks: int,
     kind: str = "parent",
     parent_inv_id: Optional[int] = None,
+    extra: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
+    """extra: например {"recurring": True, "consent": {...}} — согласие на автосписания."""
     path = store_path()
     record = {
         "inv_id": int(inv_id),
@@ -93,6 +95,9 @@ def put_pending(
         "paid_at": None,
         "notify_sent": False,
     }
+    if extra:
+        for key, value in extra.items():
+            record.setdefault(key, value)
     with _FileLock(path):
         data = _load(path)
         data["invoices"][str(int(inv_id))] = record

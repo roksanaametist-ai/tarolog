@@ -9,6 +9,26 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping, MutableMapping, Optional
 
+# Поля подписки/автопродления: источник правды — sqlite (их пишут ResultURL и
+# точечные патчи бота). При сохранении из RAM их не перетираем старыми значениями.
+BILLING_FIELDS = (
+    "subscription_plan_key",
+    "subscription_price",
+    "auto_renew",
+    "auto_renew_consent",
+    "payment_provider",
+    "robokassa_prev_invoice_id",
+    "last_robokassa_inv_id",
+    "renew_fail_count",
+    "next_renew_at",
+    "renew_reminded_for_end",
+    "renew_not_before",
+    "renew_charged_for_end",
+    "renew_pending_inv_id",
+    "renew_pending_since",
+    "granted_inv_ids",
+)
+
 
 def merge_user_documents(
     disk: Any,
@@ -28,8 +48,12 @@ def merge_user_documents(
         merged: dict[str, Any] = {**disk_u, **ram_u}
         if key not in dirty_q and "questions" in disk_u:
             merged["questions"] = disk_u["questions"]
-        if key not in dirty_s and "subscription_end" in disk_u:
-            merged["subscription_end"] = disk_u["subscription_end"]
+        if key not in dirty_s:
+            if "subscription_end" in disk_u:
+                merged["subscription_end"] = disk_u["subscription_end"]
+            for field in BILLING_FIELDS:
+                if field in disk_u:
+                    merged[field] = disk_u[field]
         out[str(key)] = merged
     return out
 
@@ -56,15 +80,6 @@ def overlay_wallet_from_disk(
         if key not in dirty_s and "subscription_end" in disk_u:
             ram_u["subscription_end"] = disk_u["subscription_end"]
         if key not in dirty_s:
-            for field in (
-                "subscription_plan_key",
-                "subscription_price",
-                "auto_renew",
-                "payment_provider",
-                "robokassa_prev_invoice_id",
-                "last_robokassa_inv_id",
-                "renew_fail_count",
-                "next_renew_at",
-            ):
+            for field in BILLING_FIELDS:
                 if field in disk_u:
                     ram_u[field] = disk_u[field]

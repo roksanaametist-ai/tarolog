@@ -696,14 +696,49 @@ class UserData:
             self._questions_dirty.add(key)
             self.save_data()
 
+    def patch_user(self, chat_id: int, changes: Dict[str, Any]) -> Dict[str, Any]:
+        """Атомарно меняет поля одного пользователя прямо в sqlite (без перезаписи остальных).
+
+        Поля подписки/автопродления пишем только так: save_data() их с диска не перетирает.
+        """
+        key = str(chat_id)
+        with self._lock:
+            def mutate(disk):
+                data = disk if isinstance(disk, dict) else {}
+                rec = data.get(key)
+                if not isinstance(rec, dict):
+                    rec = dict(self.data.get(key) or {"questions": 5, "username": None})
+                for field, value in changes.items():
+                    rec[field] = value
+                data[key] = rec
+                return data
+
+            written = operational_store.update_document(
+                "users",
+                mutate,
+                legacy_path=self.filename,
+                source="runtime_patch",
+                default={},
+            )
+            rec = written.get(key) if isinstance(written, dict) else None
+            ram = self.data.setdefault(key, {})
+            if isinstance(rec, dict):
+                for field in list(changes) + ["subscription_end"]:
+                    if field in rec:
+                        ram[field] = rec[field]
+            else:
+                ram.update(changes)
+            return dict(ram)
+
+    def get_user_record(self, chat_id: int) -> Dict[str, Any]:
+        with self._lock:
+            self._refresh_wallet_from_store()
+            return dict(self.data.get(str(chat_id)) or {})
+
     def set_subscription_end(self, chat_id: int, end_time_str: str) -> None:
         if str(chat_id) in self.data:
-            # Преобразуем строку в объект datetime
             datetime.strptime(end_time_str, '%Y-%m-%d %H:%M:%S')
-            key = str(chat_id)
-            self.data[key]['subscription_end'] = end_time_str
-            self._sub_dirty.add(key)
-            self.save_data()
+            self.patch_user(chat_id, {"subscription_end": end_time_str})
 
     def get_subscription_end(self, chat_id: int) -> Optional[datetime]:
         with self._lock:
@@ -733,31 +768,48 @@ class UserData:
         plan_key: str,
         price_kopecks: int,
     ) -> None:
-        u = self._ensure_user(chat_id)
-        u["yookassa_payment_method_id"] = payment_method_id
-        u["subscription_plan_key"] = plan_key
-        u["subscription_price"] = int(price_kopecks)
-        u["auto_renew"] = True
-        u["renew_fail_count"] = 0
-        u["next_renew_at"] = None
-        self.save_data()
+        self._ensure_user(chat_id)
+        self.patch_user(
+            chat_id,
+            {
+                "yookassa_payment_method_id": payment_method_id,
+                "subscription_plan_key": plan_key,
+                "subscription_price": int(price_kopecks),
+                "auto_renew": True,
+                "renew_fail_count": 0,
+                "next_renew_at": None,
+            },
+        )
 
     def disable_auto_renew(self, chat_id: int) -> bool:
         """Выключает автопродление. method_id оставляем на месте. Возвращает True, если было включено."""
         key = str(chat_id)
         if key not in self.data:
             return False
-        was = bool(self.data[key].get("auto_renew"))
-        self.data[key]["auto_renew"] = False
-        self.data[key]["next_renew_at"] = None
-        self.data[key]["renew_fail_count"] = 0
-        self.save_data()
+        was = bool(self.get_user_record(chat_id).get("auto_renew"))
+        self.patch_user(
+            chat_id,
+            {
+                "auto_renew": False,
+                "auto_renew_consent": None,
+                "next_renew_at": None,
+                "renew_fail_count": 0,
+                "renew_not_before": None,
+                "renew_reminded_for_end": None,
+            },
+        )
         return was
 
     def is_auto_renew_enabled(self, chat_id: int) -> bool:
         with self._lock:
             self._refresh_wallet_from_store()
-            return bool(self.data.get(str(chat_id), {}).get("auto_renew"))
+            u = self.data.get(str(chat_id), {})
+            if not u.get("auto_renew"):
+                return False
+            # Robokassa: автопродление считается включённым только при записанном согласии
+            if u.get("yookassa_payment_method_id"):
+                return True
+            return bool(u.get("auto_renew_consent"))
 
     def get_payment_method_id(self, chat_id: int) -> Optional[str]:
         with self._lock:
@@ -791,58 +843,44 @@ class UserData:
             return None
 
     def set_renew_failure(self, chat_id: int, *, fail_count: int, next_renew_at: Optional[datetime]) -> None:
-        u = self._ensure_user(chat_id)
-        u["renew_fail_count"] = int(fail_count)
-        u["next_renew_at"] = (
-            next_renew_at.strftime("%Y-%m-%d %H:%M:%S") if next_renew_at else None
-        )
+        self._ensure_user(chat_id)
+        changes: Dict[str, Any] = {
+            "renew_fail_count": int(fail_count),
+            "next_renew_at": (
+                next_renew_at.strftime("%Y-%m-%d %H:%M:%S") if next_renew_at else None
+            ),
+        }
         if fail_count >= 3:
-            u["auto_renew"] = False
-        self.save_data()
+            changes["auto_renew"] = False
+        self.patch_user(chat_id, changes)
 
     def clear_renew_failure(self, chat_id: int) -> None:
-        u = self._ensure_user(chat_id)
-        u["renew_fail_count"] = 0
-        u["next_renew_at"] = None
-        self.save_data()
+        self._ensure_user(chat_id)
+        self.patch_user(chat_id, {"renew_fail_count": 0, "next_renew_at": None})
+
+    def iter_users_renewal_actions(self, now: Optional[datetime] = None) -> List[tuple]:
+        """[(chat_id, действие)] — remind / charge / pending (см. bot_core.subscription_renewal)."""
+        from bot_core import subscription_renewal as sr
+
+        now = now or datetime.now()
+        with self._lock:
+            self._refresh_wallet_from_store()
+            items = list(self.data.items())
+        out: List[tuple] = []
+        for key, u in items:
+            if not isinstance(u, dict):
+                continue
+            action = sr.next_action(u, now, PAYMENT_PROVIDER or "")
+            if action != sr.NONE:
+                try:
+                    out.append((int(key), action))
+                except ValueError:
+                    continue
+        return out
 
     def iter_users_due_renewal(self, now: Optional[datetime] = None) -> List[int]:
-        """Пользователи с auto_renew, у которых пора списывать (≤1 день до конца или next_renew_at)."""
-        now = now or datetime.now()
-        due: List[int] = []
-        for key, u in self.data.items():
-            if not u.get("auto_renew"):
-                continue
-            provider = (u.get("payment_provider") or PAYMENT_PROVIDER or "").lower()
-            has_method = bool(u.get("yookassa_payment_method_id"))
-            has_robo = bool(u.get("robokassa_prev_invoice_id"))
-            if provider == "robokassa":
-                if not has_robo:
-                    continue
-            elif not has_method and not has_robo:
-                continue
-            price = u.get("subscription_price")
-            plan = u.get("subscription_plan_key")
-            if not price or not plan:
-                continue
-            next_raw = u.get("next_renew_at")
-            if next_raw:
-                try:
-                    if datetime.strptime(next_raw, "%Y-%m-%d %H:%M:%S") <= now:
-                        due.append(int(key))
-                    continue
-                except ValueError:
-                    pass
-            end_raw = u.get("subscription_end")
-            if not end_raw:
-                continue
-            try:
-                end = datetime.strptime(end_raw, "%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                continue
-            if end <= now + timedelta(days=1):
-                due.append(int(key))
-        return due
+        """Совместимость: пользователи, у которых пора списывать."""
+        return [cid for cid, act in self.iter_users_renewal_actions(now) if act == "charge"]
 
     def set_user_email(self, chat_id: int, email: str) -> None:
         if not self.is_valid_email(email):
@@ -3117,9 +3155,18 @@ async def activate_payment_success(
 
 def auto_renew_status_line(chat_id: int) -> str:
     if user_data.is_auto_renew_enabled(chat_id):
-        plan = user_data.get_subscription_plan_key(chat_id)
-        label = PLAN_LABELS.get(plan or "", "подписка")
-        return f"Автопродление: включено ({label})"
+        from bot_core import subscription_renewal as sr
+
+        u = user_data.get_user_record(chat_id)
+        price = u.get("subscription_price")
+        end = sr.parse(u.get("subscription_end"))
+        if price and end:
+            when = sr.parse(u.get("renew_not_before")) or (end - sr.CHARGE_BEFORE_END)
+            return (
+                f"Автопродление: включено. Следующее списание — {int(price) // 100} ₽, "
+                f"не раньше {when.strftime('%d.%m.%Y')}."
+            )
+        return "Автопродление: включено"
     if user_data.get_payment_method_id(chat_id):
         return "Автопродление: выключено"
     return "Автопродление: не подключено"
@@ -3783,7 +3830,15 @@ async def charge_recurring_subscription(chat_id: int) -> bool:
         user_data.get_robokassa_prev_invoice_id(chat_id) and provider != "yookassa"
     ):
         from bot_core import robokassa, robokassa_store
+        from bot_core import subscription_renewal as sr
 
+        if not robokassa.recurring_enabled():
+            logging.info("Robokassa recurring off, skip chat_id=%s", chat_id)
+            return None
+        # P-2: перепроверяем по свежей записи — за один период списываем один раз
+        fresh = user_data.get_user_record(chat_id)
+        if sr.next_action(fresh, datetime.now(), PAYMENT_PROVIDER or "") != sr.CHARGE:
+            return None
         prev = user_data.get_robokassa_prev_invoice_id(chat_id)
         if not prev:
             logging.warning("Robokassa recurring skipped: no prev invoice chat_id=%s", chat_id)
@@ -3810,12 +3865,15 @@ async def charge_recurring_subscription(chat_id: int) -> bool:
                 shp=shp,
             )
         except Exception as e:
+            # Неизвестно, принят ли запрос: не повторяем вслепую, статус выясним через OpState
             logging.warning("Robokassa recurring request failed chat_id=%s: %s", chat_id, e)
-            return False
+            user_data.patch_user(chat_id, sr.pending_changes(fresh, inv_id, datetime.now()))
+            return None
         if "OK" in (body or "").upper():
-            user_data.clear_renew_failure(chat_id)
+            # P-2: помечаем период как списанный; продление выдаст ResultURL (fulfill)
+            user_data.patch_user(chat_id, sr.pending_changes(fresh, inv_id, datetime.now()))
             return True
-        logging.warning("Robokassa recurring unexpected body chat_id=%s: %s", chat_id, body)
+        logging.warning("Robokassa recurring unexpected body chat_id=%s: %s", chat_id, (body or "")[:200])
         return False
 
     pmid = user_data.get_payment_method_id(chat_id)
@@ -3909,7 +3967,10 @@ async def charge_recurring_subscription(chat_id: int) -> bool:
 
 
 async def handle_recurring_failure(chat_id: int) -> None:
-    u = user_data.data.get(str(chat_id), {})
+    u = user_data.get_user_record(chat_id)
+    if u.get("renew_pending_inv_id"):
+        # счёт ещё ждёт ответа Robokassa — это не неудача, решит OpState
+        return
     fail_count = int(u.get("renew_fail_count", 0)) + 1
     if fail_count == 1:
         next_at = datetime.now() + timedelta(hours=12)
@@ -3941,6 +4002,80 @@ async def handle_recurring_failure(chat_id: int) -> None:
         pass
 
 
+def _renew_provider_ready(chat_id: int) -> bool:
+    """Для Robokassa — только если автосписания включены в кабинете (recurring_enabled)."""
+    u = user_data.get_user_record(chat_id)
+    provider = (u.get("payment_provider") or PAYMENT_PROVIDER or "").lower()
+    if provider == "robokassa" or (u.get("robokassa_prev_invoice_id") and not u.get("yookassa_payment_method_id")):
+        from bot_core import robokassa
+
+        return robokassa.recurring_enabled()
+    return True
+
+
+async def send_renewal_reminder(chat_id: int) -> None:
+    """Напоминание за 3 дня до списания (оферта п. 11). Списание — не раньше renew_not_before."""
+    from bot_core import subscription_renewal as sr
+
+    if not _renew_provider_ready(chat_id):
+        return
+    u = user_data.get_user_record(chat_id)
+    now = datetime.now()
+    changes = sr.reminder_changes(u, now)
+    if not changes:
+        return
+    when = sr.parse(changes["renew_not_before"])
+    price_rub = int(u.get("subscription_price") or 0) // 100
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="⏸ Отменить автопродление", callback_data="cancel_auto_renew"))
+    text = (
+        f"Напоминание: {when.strftime('%d.%m.%Y')} с карты спишется {price_rub} ₽ "
+        "за следующий месяц безлимита.\n"
+        "Если не хотите продлевать — нажмите «⏸ Отменить автопродление»."
+    )
+    try:
+        await bot.send_message(chat_id, text, reply_markup=kb.as_markup())
+    except Exception as e:
+        # не доставили — не списываем: попробуем напомнить на следующем круге
+        logging.warning("renewal reminder not sent chat_id=%s: %s", chat_id, e)
+        return
+    user_data.patch_user(chat_id, changes)
+
+
+async def resolve_pending_renewal(chat_id: int) -> None:
+    """Дочерний счёт ждёт ResultURL. Через 30 мин спрашиваем OpState; вслепую не списываем."""
+    from bot_core import robokassa, robokassa_store
+    from bot_core import subscription_renewal as sr
+
+    u = user_data.get_user_record(chat_id)
+    inv_id = u.get("renew_pending_inv_id")
+    if not inv_id or not sr.pending_due_for_check(u, datetime.now()):
+        return
+    rec = robokassa_store.get_invoice(int(inv_id)) or {}
+    if rec.get("status") == "paid":
+        return  # грант идёт/прошёл через ResultURL — fulfill сам снимет отметку
+    try:
+        state = await asyncio.to_thread(robokassa.op_state, int(inv_id))
+    except Exception as e:
+        logging.warning("OpState failed inv=%s: %s", inv_id, e)
+        return
+    if state is None:
+        return
+    if state.paid:
+        from bot_core import robokassa_fulfill
+
+        await asyncio.to_thread(robokassa_fulfill.fulfill_invoice, int(inv_id), out_sum=state.out_sum)
+        with user_data._lock:
+            user_data._refresh_wallet_from_store()
+        return
+    if state.failed:
+        user_data.patch_user(
+            chat_id,
+            {"renew_pending_inv_id": None, "renew_pending_since": None, "renew_charged_for_end": None},
+        )
+        await handle_recurring_failure(chat_id)
+
+
 async def recurring_billing_loop():
     """Фоновое автопродление безлимитных подписок через сохранённый payment_method."""
     if not PAYMENTS_ENABLED:
@@ -3948,13 +4083,21 @@ async def recurring_billing_loop():
     await asyncio.sleep(90)
     while True:
         try:
-            due_ids = user_data.iter_users_due_renewal()
-            for chat_id in due_ids:
+            actions = user_data.iter_users_renewal_actions()
+            for chat_id, action in actions:
                 if not user_data.is_auto_renew_enabled(chat_id):
                     continue
                 try:
+                    if action == "remind":
+                        await send_renewal_reminder(chat_id)
+                        await asyncio.sleep(1)
+                        continue
+                    if action == "pending":
+                        await resolve_pending_renewal(chat_id)
+                        await asyncio.sleep(1)
+                        continue
                     ok = await charge_recurring_subscription(chat_id)
-                    if not ok:
+                    if ok is False:
                         await handle_recurring_failure(chat_id)
                 except Exception as e:
                     logging.warning("Recurring charge error chat_id=%s: %s", chat_id, e)
@@ -11436,13 +11579,14 @@ async def open_subscription_menu(chat_id: int, state: FSMContext, *, answer) -> 
     if not user_has_active_subscription(chat_id):
         payment_nurture.set_intent(chat_id)
     email = user_data.get_user_email(chat_id)
-    intro = (
-        "Выбери тариф на месяц безлимита:\n\n"
-        "111 / 555 / 999 ₽ — один месяц безлимита. "
-        "После оплаты карта сохранится для автопродления; "
-        "отменить можно кнопкой ниже."
-        + REFERRAL_HINT
-    )
+    if user_has_active_subscription(chat_id) and user_data.is_auto_renew_enabled(chat_id):
+        # Экран 2: управление подпиской
+        await cleanup_service_msgs(chat_id)
+        msg = await answer(subscription_manage_text(chat_id), reply_markup=subscription_manage_kb())
+        if getattr(msg, "message_id", None):
+            await remember_service_msg(chat_id, msg.message_id)
+        return
+    intro = subscription_intro_text(chat_id) + REFERRAL_HINT
     if email:
         await cleanup_service_msgs(chat_id)
         msg = await answer(intro, reply_markup=sub(chat_id))
@@ -11525,9 +11669,7 @@ async def email_box(message: Message, state: FSMContext):
         await state.clear()
         await cleanup_service_msgs(chat_id)
         await message.answer(
-            "Email установлен. Выберите подписку.\n\n"
-            "Тарифы 111/555/999 — месяц безлимита с автопродлением (отвязать карту можно в меню)."
-            + REFERRAL_HINT,
+            "Email установлен.\n\n" + subscription_intro_text(chat_id) + REFERRAL_HINT,
             reply_markup=sub(chat_id),
         )
     except ValueError:
@@ -11537,6 +11679,192 @@ async def email_box(message: Message, state: FSMContext):
             state=state,
             reply_markup=back_kb(),
         )
+
+
+def recurring_available() -> bool:
+    """Можно ли сейчас оформить автопродление (для Robokassa — после одобрения магазина)."""
+    if PAYMENT_PROVIDER == "robokassa":
+        from bot_core import robokassa
+
+        return robokassa.recurring_enabled()
+    return True
+
+
+def recurring_preview(chat_id: Optional[int]) -> bool:
+    """Показ экранов автопродления администратору, пока Robokassa не одобрила (для скриншотов).
+
+    Оплата при этом остаётся разовой: ссылка без Recurring, автопродление не включается.
+    """
+    if chat_id is None or recurring_available():
+        return False
+    if (os.getenv("RECURRING_PREVIEW_ADMINS") or "1").strip() != "1":
+        return False
+    return is_bot_admin(chat_id)
+
+
+def subscription_intro_text(chat_id: Optional[int] = None) -> str:
+    if recurring_available() or recurring_preview(chat_id):
+        return (
+            "Выберите тариф «Месяц безлимит» (31 день).\n\n"
+            "Дальше подписка продлевается сама: каждые 31 день с карты списывается та же сумма. "
+            "За 3 дня до списания придёт напоминание. Отменить можно в любой момент одной кнопкой "
+            "в этом меню."
+        )
+    return (
+        "Выберите тариф «Месяц безлимит» (31 день).\n\n"
+        "Это разовая оплата: автопродления нет, карта для списаний не сохраняется."
+    )
+
+
+def subscription_manage_text(chat_id: int) -> str:
+    """Экран 2. Ваша подписка."""
+    u = user_data.get_user_record(chat_id)
+    price = int(u.get("subscription_price") or 0) // 100
+    end = user_data.get_subscription_end(chat_id)
+    end_s = end.strftime("%d.%m.%Y") if end else "—"
+    return (
+        "Ваша подписка\n"
+        f"Тариф: Месяц безлимит, {price} ₽ за 31 день\n"
+        f"Оплачено до: {end_s}\n"
+        + auto_renew_status_line(chat_id)
+    )
+
+
+def subscription_manage_kb():
+    from bot_core import recurring_consent
+
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="⏸ Отменить автопродление", callback_data="cancel_auto_renew"))
+    kb.row(
+        types.InlineKeyboardButton(text="📄 Оферта", url=recurring_consent.offer_url()),
+        types.InlineKeyboardButton(text=BACK_BUTTON_TEXT, callback_data="back_to_main"),
+    )
+    return kb.as_markup()
+
+
+CONSENT_TEXT_FULL = "Я согласен на автоматические списания согласно условиям оферты"
+
+# Галочка согласия: хранится на стороне бота (не в кнопке), по умолчанию не отмечена
+_consent_ticks: Dict[tuple, bool] = {}
+
+
+def consent_screen_text(plan_key: str) -> str:
+    """Экран 1. Оформление подписки с автопродлением."""
+    price = int(PLAN_PRICE_KOPECKS.get(plan_key, 0)) // 100
+    return (
+        "Подписка «Месяц безлимит»\n"
+        "Расклады без лимита 31 день. Дальше подписка продлевается сама: каждые 31 день "
+        "с карты списывается та же сумма. За 3 дня до списания придёт напоминание. "
+        "Отменить можно в любой момент одной кнопкой в меню «💳 Оформить подписку».\n\n"
+        f"Стоимость для вас: {price} ₽ за 31 день\n\n"
+        "Чтобы оформить, отметьте галочку ниже:\n"
+        f"«{CONSENT_TEXT_FULL}»"
+    )
+
+
+def consent_screen_kb(plan_key: str, ticked: bool):
+    from bot_core import recurring_consent
+
+    box = "☑" if ticked else "☐"
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        types.InlineKeyboardButton(
+            text=f"{box} Согласен на автоматические списания",
+            callback_data=f"rcons_toggle:{plan_key}",
+        )
+    )
+    kb.row(types.InlineKeyboardButton(text="📄 Оферта", url=recurring_consent.offer_url()))
+    kb.row(types.InlineKeyboardButton(text="💳 Оплатить", callback_data=f"rcons_pay:{plan_key}"))
+    kb.row(types.InlineKeyboardButton(text=BACK_BUTTON_TEXT, callback_data="back_to_main"))
+    return kb.as_markup()
+
+
+@dp.callback_query(F.data.startswith("rcons_toggle:"))
+async def consent_toggle_cb(call: CallbackQuery):
+    chat_id = call.message.chat.id
+    plan_key = call.data.split(":", 1)[1]
+    if plan_key not in RECURRING_PLAN_KEYS:
+        await call.answer()
+        return
+    key = (chat_id, plan_key)
+    _consent_ticks[key] = not _consent_ticks.get(key, False)
+    try:
+        await call.message.edit_reply_markup(reply_markup=consent_screen_kb(plan_key, _consent_ticks[key]))
+    except Exception:
+        pass
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("rcons_pay:"))
+async def consent_pay_cb(call: CallbackQuery):
+    chat_id = call.message.chat.id
+    plan_key = call.data.split(":", 1)[1]
+    if not PAYMENTS_ENABLED or plan_key not in RECURRING_PLAN_KEYS:
+        await call.answer("Оплата временно выключена", show_alert=True)
+        return
+    if not _consent_ticks.get((chat_id, plan_key)):
+        await call.answer("Сначала отметьте согласие на автоматические списания", show_alert=True)
+        return
+    email = user_data.get_user_email(chat_id)
+    if not email:
+        await call.answer()
+        await bot.send_message(
+            chat_id,
+            "Для оплаты сначала укажите email через «💳 Оформить подписку».",
+            reply_markup=back_kb(),
+        )
+        return
+    await call.answer()
+    _consent_ticks.pop((chat_id, plan_key), None)
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+    selected_price = int(PLAN_PRICE_KOPECKS.get(plan_key, 0))
+    try:
+        await _start_robokassa_checkout(chat_id, plan_key, selected_price, email, consent=True)
+    except (ValueError, TypeError) as e:
+        await bot.send_message(chat_id, f"Оплата временно недоступна: {e}", reply_markup=back_kb())
+
+
+@dp.message(Command("demo_podpiska"))
+async def demo_subscription_screens(message: Message, state: FSMContext):
+    """Только для админа: экраны 2 и 3 на примере (для скриншотов в Robokassa). Ничего не меняет."""
+    chat_id = message.chat.id
+    if not is_bot_admin(chat_id):
+        return
+    from bot_core import recurring_consent
+
+    end = datetime.now() + timedelta(days=31)
+    next_charge = end - timedelta(days=1)
+    text2 = (
+        "Ваша подписка\n"
+        "Тариф: Месяц безлимит, 555 ₽ за 31 день\n"
+        f"Оплачено до: {end.strftime('%d.%m.%Y')}\n"
+        f"Автопродление: включено. Следующее списание — 555 ₽, не раньше {next_charge.strftime('%d.%m.%Y')}."
+    )
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="⏸ Отменить автопродление", callback_data="rcons_demo_cancel"))
+    kb.row(
+        types.InlineKeyboardButton(text="📄 Оферта", url=recurring_consent.offer_url()),
+        types.InlineKeyboardButton(text=BACK_BUTTON_TEXT, callback_data="back_to_main"),
+    )
+    await message.answer("(пример, видит только администратор)\n\n" + text2, reply_markup=kb.as_markup())
+
+
+@dp.callback_query(F.data == "rcons_demo_cancel")
+async def demo_cancel_cb(call: CallbackQuery):
+    if not is_bot_admin(call.message.chat.id):
+        await call.answer()
+        return
+    await call.answer()
+    end = datetime.now() + timedelta(days=31)
+    await call.message.answer(
+        "Автопродление отключено. Списаний больше не будет. "
+        f"Доступ сохранится до {end.strftime('%d.%m.%Y')}.\n"
+        "Включить снова: «💳 Оформить подписку».",
+        reply_markup=main_kb(call.message.chat.id),
+    )
 
 
 def sub(chat_id: Optional[int] = None):
@@ -11585,7 +11913,16 @@ async def submonth(call: CallbackQuery):
 
     try:
         if PAYMENT_PROVIDER == "robokassa":
-            await _start_robokassa_checkout(chat_id, plan_key, selected_price, email)
+            if plan_key in RECURRING_PLAN_KEYS and (recurring_available() or recurring_preview(chat_id)):
+                # Экран 1: галочка согласия (не отмечена заранее) перед оплатой
+                _consent_ticks[(chat_id, plan_key)] = False
+                await bot.send_message(
+                    chat_id,
+                    consent_screen_text(plan_key),
+                    reply_markup=consent_screen_kb(plan_key, False),
+                )
+            else:
+                await _start_robokassa_checkout(chat_id, plan_key, selected_price, email)
         else:
             configure_yookassa()
             order_manager.increment_order_number()
@@ -11668,15 +12005,28 @@ async def cancel_auto_renew_cb(call: CallbackQuery):
             reply_markup=main_kb(chat_id),
         )
         return
+    from bot_core import recurring_consent
+
+    rec_before = user_data.get_user_record(chat_id)
     user_data.disable_auto_renew(chat_id)
+    try:
+        recurring_consent.record(
+            chat_id=chat_id,
+            action="cancel",
+            plan_key=rec_before.get("subscription_plan_key"),
+            amount_kopecks=rec_before.get("subscription_price"),
+            inv_id=rec_before.get("robokassa_prev_invoice_id"),
+        )
+    except Exception as exc:
+        logging.warning("consent log (cancel) failed: %s", exc)
     end = user_data.get_subscription_end(chat_id)
     end_note = ""
     if end and end > datetime.now():
-        end_note = f"\nТекущая подписка действует до {end.strftime('%d.%m.%Y %H:%M')}."
+        end_note = f" Доступ сохранится до {end.strftime('%d.%m.%Y')}."
     await call.message.answer(
-        "Автопродление отключено. Повторных списаний не будет."
+        "Автопродление отключено. Списаний больше не будет."
         + end_note
-        + "\nЧтобы снова включить — оплатите безлимитный тариф заново.",
+        + "\nВключить снова: «💳 Оформить подписку».",
         reply_markup=main_kb(chat_id),
     )
 
@@ -11712,8 +12062,9 @@ async def _start_robokassa_checkout(
     plan_key: str,
     selected_price: int,
     email: str,
+    consent: bool = False,
 ) -> None:
-    from bot_core import robokassa, robokassa_store
+    from bot_core import recurring_consent, robokassa, robokassa_store
 
     if not robokassa.is_configured():
         raise ValueError("Robokassa не настроена (LOGIN/PASSWORD1/PASSWORD2)")
@@ -11722,7 +12073,26 @@ async def _start_robokassa_checkout(
     inv_id = int(order_manager.get_order_number())
     amount_rub = int(selected_price) / 100.0
     shp = {"chat_id": str(chat_id), "plan": plan_key}
-    use_recurring = robokassa.recurring_enabled()
+    # Автопродление — только если магазин одобрен И пользователь поставил галочку
+    use_recurring = bool(consent) and robokassa.recurring_enabled() and plan_key in RECURRING_PLAN_KEYS
+    extra = None
+    if use_recurring:
+        entry = recurring_consent.record(
+            chat_id=chat_id,
+            action="agree",
+            plan_key=plan_key,
+            amount_kopecks=int(selected_price),
+            inv_id=inv_id,
+        )
+        extra = {
+            "recurring": True,
+            "consent": {
+                "ts": entry["ts"],
+                "offer_edition": entry["offer_edition"],
+                "offer_url": entry["offer_url"],
+                "consent_text": entry["consent_text"],
+            },
+        }
     link = robokassa.build_payment_link(
         inv_id=inv_id,
         amount_rub=amount_rub,
@@ -11737,6 +12107,7 @@ async def _start_robokassa_checkout(
         plan_key=plan_key,
         amount_kopecks=int(selected_price),
         kind="parent",
+        extra=extra,
     )
     payment_nurture.set_checkout(
         chat_id,
@@ -11752,14 +12123,12 @@ async def _start_robokassa_checkout(
     pay_kb.row(types.InlineKeyboardButton(text=BACK_BUTTON_TEXT, callback_data="back_to_main"))
     if use_recurring:
         renew_note = (
-            "\n\nКарта сохранится для автопродления. "
+            "\n\nДальше подписка продлевается сама: каждые 31 день спишется "
+            f"{int(selected_price) // 100} ₽, за 3 дня до списания придёт напоминание. "
             "Отменить — в меню «💳 Оформить подписку»."
         )
     else:
-        renew_note = (
-            "\n\nСейчас это разовая оплата на месяц "
-            "(автопродление включим после одобрения Robokassa)."
-        )
+        renew_note = "\n\nЭто разовая оплата: автопродления нет."
     await bot.send_message(
         chat_id,
         text=(
@@ -11783,11 +12152,22 @@ async def check_robokassa_payment_status(
     plan_key: Optional[str] = None,
 ) -> None:
     """Backup poll: ResultURL is primary; here we detect grant and avoid duplicate notify."""
-    from bot_core import robokassa_store
+    from bot_core import robokassa, robokassa_fulfill, robokassa_store
 
     del selected_price, plan_key
-    for _ in range(60):
+    for attempt in range(60):
         rec = robokassa_store.get_invoice(inv_id)
+        if rec and rec.get("status") != "paid" and attempt in (18, 59):
+            # P-7: ResultURL мог не дойти — спросить Robokassa про ЭТОТ счёт (только его)
+            try:
+                state = await asyncio.to_thread(robokassa.op_state, inv_id)
+                if state is not None and state.paid:
+                    await asyncio.to_thread(
+                        robokassa_fulfill.fulfill_invoice, inv_id, out_sum=state.out_sum
+                    )
+                    rec = robokassa_store.get_invoice(inv_id)
+            except Exception as exc:
+                logging.warning("robokassa opstate check failed inv=%s: %s", inv_id, exc)
         if rec and rec.get("status") == "paid":
             # подтянуть грант из sqlite/json (ResultURL пишет в store)
             with user_data._lock:
@@ -11795,10 +12175,13 @@ async def check_robokassa_payment_status(
             if not rec.get("notify_sent"):
                 end = user_data.get_subscription_end(chat_id)
                 end_s = end.strftime("%d.%m.%Y") if end else "—"
-                renew_note = (
-                    "\n\nАвтопродление включено. Отменить — «💳 Оформить подписку» → "
-                    "«Отменить автопродление»."
-                )
+                if user_data.is_auto_renew_enabled(chat_id):
+                    renew_note = (
+                        "\n\nАвтопродление включено. Отменить — «💳 Оформить подписку» → "
+                        "«⏸ Отменить автопродление»."
+                    )
+                else:
+                    renew_note = "\n\nЭто разовая оплата, автопродления нет."
                 try:
                     await bot.send_message(
                         chat_id,

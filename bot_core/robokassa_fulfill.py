@@ -184,6 +184,133 @@ def notify_telegram(chat_id: int, text: str) -> bool:
         return False
 
 
+GRANTED_KEEP = 50
+
+
+def _later_end(*values: Optional[str]) -> Optional[str]:
+    best: Optional[datetime] = None
+    best_raw: Optional[str] = None
+    for raw in values:
+        if not raw:
+            continue
+        try:
+            dt = datetime.strptime(str(raw), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        if best is None or dt > best:
+            best, best_raw = dt, str(raw)
+    return best_raw
+
+
+def apply_grant(
+    rec: dict[str, Any],
+    *,
+    inv_id: int,
+    invoice: dict[str, Any],
+    wallet_end: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> tuple[bool, dict[str, Any]]:
+    """Чистая логика выдачи для одной записи пользователя (внутри атомарной записи sqlite).
+
+    Возвращает (granted_now, changes). granted_now=False — этот счёт уже выдан (P-3).
+    """
+    granted: list[int] = []
+    for x in rec.get("granted_inv_ids") or []:
+        try:
+            granted.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    if int(inv_id) in granted:
+        return False, {}
+
+    plan_key = str(invoice.get("plan_key") or "")
+    amount_kopecks = int(invoice.get("amount_kopecks") or 0)
+    days = int(PLAN_DAYS.get(plan_key, 31))
+    kind = str(invoice.get("kind") or "parent")
+
+    # P-1: база — запись sqlite (или более поздняя дата из shared_wallet)
+    now = now or datetime.now()
+    start = now
+    base = _later_end(rec.get("subscription_end"), wallet_end)
+    if base:
+        dt = datetime.strptime(base, "%Y-%m-%d %H:%M:%S")
+        if dt > now:
+            start = dt
+    new_end = (start + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+
+    changes: dict[str, Any] = {
+        "subscription_end": new_end,
+        "subscription_plan_key": plan_key,
+        "subscription_price": amount_kopecks,
+        "last_robokassa_inv_id": int(inv_id),
+        "payment_provider": "robokassa",
+        "renew_fail_count": 0,
+        "next_renew_at": None,
+        "renew_pending_inv_id": None,
+        "renew_pending_since": None,
+        "renew_not_before": None,
+        "granted_inv_ids": (granted + [int(inv_id)])[-GRANTED_KEEP:],
+    }
+    if kind == "parent":
+        consent = invoice.get("consent") if isinstance(invoice.get("consent"), dict) else None
+        recurring = bool(invoice.get("recurring")) and consent is not None
+        # автопродление — только при согласии (галочка) и рекуррентном счёте
+        changes["auto_renew"] = recurring
+        changes["auto_renew_consent"] = consent if recurring else None
+        changes["renew_reminded_for_end"] = None
+        changes["renew_charged_for_end"] = None
+        if recurring:
+            changes["robokassa_prev_invoice_id"] = int(inv_id)
+    else:
+        # дочернее списание: auto_renew заново не включаем (вдруг отменили, пока шёл платёж)
+        if not rec.get("robokassa_prev_invoice_id") and invoice.get("parent_inv_id"):
+            changes["robokassa_prev_invoice_id"] = int(invoice["parent_inv_id"])
+    return True, changes
+
+
+def _grant_in_store(
+    chat_id: int, inv_id: int, invoice: dict[str, Any], wallet_end: Optional[str]
+) -> tuple[bool, dict[str, Any]]:
+    """Атомарно (sqlite BEGIN IMMEDIATE) применяет выдачу. Возвращает (granted_now, запись)."""
+    from bot_core.operational_store import OperationalStore
+
+    store = OperationalStore(_data_dir() / "bot_state.sqlite3")
+    key = str(int(chat_id))
+    result: dict[str, Any] = {"granted": False, "rec": {}}
+
+    def mutator(disk: Any) -> Any:
+        data = disk if isinstance(disk, dict) else {}
+        rec = data.get(key)
+        if not isinstance(rec, dict):
+            rec = {"questions": 5, "username": None}
+        granted_now, changes = apply_grant(rec, inv_id=inv_id, invoice=invoice, wallet_end=wallet_end)
+        rec.update(changes)
+        data[key] = rec
+        result["granted"] = granted_now
+        result["rec"] = dict(rec)
+        return data
+
+    store.update_document(
+        "users",
+        mutator,
+        legacy_path=_user_data_path(),
+        source="robokassa_fulfill",
+        default={},
+    )
+    return bool(result["granted"]), result["rec"]
+
+
+def _mark_fulfilled(inv_id: int) -> None:
+    path = robokassa_store.store_path()
+    with robokassa_store._FileLock(path):
+        data = robokassa_store._load(path)
+        rec = data["invoices"].get(str(int(inv_id)))
+        if isinstance(rec, dict):
+            rec["fulfilled"] = True
+            data["invoices"][str(int(inv_id))] = rec
+            robokassa_store._save(path, data)
+
+
 def fulfill_invoice(inv_id: int, *, out_sum: Optional[str] = None) -> dict[str, Any]:
     """
     Idempotent grant for paid InvId.
@@ -210,7 +337,6 @@ def fulfill_invoice(inv_id: int, *, out_sum: Optional[str] = None) -> dict[str, 
     chat_id = int(paid["chat_id"])
     plan_key = str(paid.get("plan_key") or "")
     amount_kopecks = int(paid.get("amount_kopecks") or 0)
-    days = int(PLAN_DAYS.get(plan_key, 31))
     kind = str(paid.get("kind") or "parent")
 
     seed = None
@@ -222,59 +348,50 @@ def fulfill_invoice(inv_id: int, *, out_sum: Optional[str] = None) -> dict[str, 
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         seed = None
 
-    current = shared_wallet.view("tg", chat_id, seed)
-    new_end = _stack_subscription_end(current.get("subscription_end"), days)
+    wallet_end = None
+    try:
+        wallet_end = shared_wallet.view("tg", chat_id, seed).get("subscription_end")
+    except Exception as exc:
+        logger.warning("shared_wallet view failed chat_id=%s: %s", chat_id, exc)
 
-    changes: dict[str, Any] = {
-        "subscription_end": new_end,
-        "subscription_plan_key": plan_key,
-        "subscription_price": amount_kopecks,
-        "last_robokassa_inv_id": int(inv_id),
-        "payment_provider": "robokassa",
-        "auto_renew": True,
-        "renew_fail_count": 0,
-        "next_renew_at": None,
-    }
-    if kind == "parent":
-        changes["robokassa_prev_invoice_id"] = int(inv_id)
-    elif not current.get("robokassa_prev_invoice_id"):
-        parent = paid.get("parent_inv_id")
-        if parent:
-            changes["robokassa_prev_invoice_id"] = int(parent)
+    granted_now, rec = _grant_in_store(chat_id, int(inv_id), paid, wallet_end)
+    if not granted_now:
+        # этот счёт уже выдан (повторный ResultURL / параллельный вызов) — второй раз не даём
+        _mark_fulfilled(inv_id)
+        return {"ok": True, "already": True, "chat_id": chat_id, "plan_key": plan_key}
 
-    wallet = shared_wallet.update("tg", chat_id, seed, changes)
-    _patch_users_store(chat_id, {k: wallet.get(k) for k in changes})
+    new_end = str(rec.get("subscription_end"))
+    try:
+        shared_wallet.update(
+            "tg", chat_id, seed, {k: rec.get(k) for k in shared_wallet.WALLET_FIELDS if k in rec}
+        )
+    except Exception as exc:
+        logger.warning("shared_wallet update failed chat_id=%s: %s", chat_id, exc)
     try:
         _bump_payment_stats(amount_kopecks, plan_key)
     except OSError:
         pass
     _mark_nurture_done(chat_id)
+    _mark_fulfilled(inv_id)
 
-    # mark fulfilled flag on invoice
-    path = robokassa_store.store_path()
-    with robokassa_store._FileLock(path):
-        data = robokassa_store._load(path)
-        rec = data["invoices"].get(str(int(inv_id)))
-        if isinstance(rec, dict):
-            rec["fulfilled"] = True
-            data["invoices"][str(int(inv_id))] = rec
-            robokassa_store._save(path, data)
-
-    label = PLAN_LABELS.get(plan_key, "Подписка")
     end_human = datetime.strptime(new_end, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y")
+    price_rub = amount_kopecks // 100
     if kind == "parent":
+        if rec.get("auto_renew"):
+            renew = (
+                f"Автопродление включено: каждые 31 день спишется {price_rub} ₽, "
+                "за 3 дня до списания придёт напоминание. "
+                "Отменить — в меню «💳 Оформить подписку»."
+            )
+        else:
+            renew = "Это разовая оплата, автопродления нет."
         text = (
-            f"Оплата прошла успешно ✨\n"
-            f"Тариф: {label}\n"
-            f"Безлимит до {end_human}.\n"
-            f"Автопродление включено — отменить можно в меню «💳 Оформить подписку»."
+            "Оплата прошла успешно ✨\n"
+            f"Месяц безлимит, {price_rub} ₽.\n"
+            f"Безлимит до {end_human}.\n" + renew
         )
     else:
-        text = (
-            f"Автопродление прошло успешно ✨\n"
-            f"Тариф: {label}\n"
-            f"Подписка продлена до {end_human}."
-        )
+        text = f"Подписка продлена до {end_human}. Списано {price_rub} ₽."
 
     notified = False
     if not paid.get("notify_sent"):

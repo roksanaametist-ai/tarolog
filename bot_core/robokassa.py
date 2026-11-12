@@ -259,3 +259,64 @@ def request_recurring(
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         return resp.read().decode("utf-8", errors="replace")
+
+
+OPSTATE_URL = "https://auth.robokassa.ru/Merchant/WebService/Service.asmx/OpStateExt"
+
+# Коды состояния OpState: 5 создан, 10 отменён (денег нет), 50 деньги получены, идёт зачисление,
+# 60 возвращены покупателю, 80 приостановлен, 100 оплачен.
+_PAID_STATES = {100}
+_FAILED_STATES = {10, 60}
+
+
+@dataclass(frozen=True)
+class OpState:
+    result_code: int
+    state_code: Optional[int]
+    out_sum: Optional[str] = None
+
+    @property
+    def paid(self) -> bool:
+        return self.result_code == 0 and self.state_code in _PAID_STATES
+
+    @property
+    def failed(self) -> bool:
+        # 3 = счёт не найден (запрос на списание не создан)
+        return self.result_code == 3 or (self.result_code == 0 and self.state_code in _FAILED_STATES)
+
+
+def sign_opstate(inv_id: int) -> str:
+    """MerchantLogin:InvoiceID:Password2."""
+    return _md5(f"{_env('ROBOKASSA_LOGIN')}:{int(inv_id)}:{_password2()}")
+
+
+def parse_opstate(xml_text: str) -> Optional[OpState]:
+    import re
+
+    text = xml_text or ""
+    res = re.search(r"<Result>\s*<Code>\s*(\d+)\s*</Code>", text)
+    if not res:
+        return None
+    st = re.search(r"<State>\s*<Code>\s*(\d+)\s*</Code>", text)
+    amount = re.search(r"<OutSum>\s*([\d.,]+)\s*</OutSum>", text)
+    return OpState(
+        result_code=int(res.group(1)),
+        state_code=int(st.group(1)) if st else None,
+        out_sum=amount.group(1).replace(",", ".") if amount else None,
+    )
+
+
+def op_state(inv_id: int) -> Optional[OpState]:
+    """Статус счёта в Robokassa (XML OpStateExt). None — ответ не понят / нет связи."""
+    if not is_configured():
+        return None
+    query = urllib.parse.urlencode(
+        {
+            "MerchantLogin": _env("ROBOKASSA_LOGIN"),
+            "InvoiceID": str(int(inv_id)),
+            "Signature": sign_opstate(inv_id),
+        }
+    )
+    req = urllib.request.Request(f"{OPSTATE_URL}?{query}", method="GET")
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return parse_opstate(resp.read().decode("utf-8", errors="replace"))

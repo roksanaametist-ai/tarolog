@@ -22,18 +22,10 @@ cd "путь\к\TarGPT3"
 
 ## Деплой
 
-**Продакшен (HSHP VPS, `followthefrensy.com`):** см. `DEPLOY-HSHP.md`  
+**Продакшен (HSHP VPS, `followthefrensy.ru`):** см. `DEPLOY-HSHP.md`  
 Бот — systemd, лендинг — Gunicorn + nginx. WebApp `/cards` и `/yesno` уже на сервере.
 
 **Альтернатива (Amvera):** см. `DEPLOY-AMVERA.md` — два облачных проекта, если VPS не используете.
-
-## Подписки и автопродление (YooKassa)
-
-- Пакет **10 запросов** — разовая оплата.
-- Тарифы **месяц / 3 месяца / год** — при оплате сохраняется карта (`save_payment_method`), бот сам продлевает за 1 день до конца периода.
-- В кабинете [ЮKassa](https://yookassa.ru) у магазина должны быть включены **Автоплатежи**.
-- В `user_data.json`: `yookassa_payment_method_id`, `auto_renew`, `subscription_plan_key`, `subscription_price`.
-- Отмена: «💳 Оформить подписку» → «Отменить автопродление».
 
 ## Связка сайт → бот
 
