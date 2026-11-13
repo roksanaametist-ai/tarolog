@@ -21,10 +21,6 @@ PLAN_DAYS = {
     "sub_m_111": 31,
     "sub_m_555": 31,
     "sub_m_999": 31,
-    # legacy keys (if old pending somehow)
-    "sub_7d_399": 31,
-    "sub_14d_499": 93,
-    "sub_30d_699": 365,
 }
 
 PLAN_LABELS = {

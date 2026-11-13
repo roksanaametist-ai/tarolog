@@ -78,6 +78,7 @@ from bot_core.compat import (
 )
 from bot_core.share_cards import generate_compat_story_card
 from bot_core import compat_paid
+from bot_core import sub_stars
 from bot_core.price_poll import (
     CHOICE_LABELS as PRICE_POLL_LABELS,
     QUESTION as PRICE_POLL_QUESTION,
@@ -122,6 +123,7 @@ PAYMENT_FILE = data_file("payment_data.json")
 payment_stats_store = PaymentStatsStore(operational_store, PAYMENT_FILE)
 compat_store = CompatInviteStore(operational_store)
 compat_orders = compat_paid.CompatOrderStore(operational_store)
+sub_stars_payments = sub_stars.SubStarsPayments(operational_store)
 public_card_store = PublicCardStore(
     data_file("public_card_posts.json"),
     data_file("public_card_entries.json"),
@@ -2360,42 +2362,27 @@ PLAN_LABELS = {
     "sub_m_111": "Месяц безлимит — 111 ₽",
     "sub_m_555": "Месяц безлимит — 555 ₽",
     "sub_m_999": "Месяц безлимит — 999 ₽",
-    # legacy YooKassa keys (не показываем в меню)
-    "sub_10_169": "10 запросов — 169 ₽",
-    "sub_7d_399": "Месяц безлимит — 359 ₽",
-    "sub_14d_499": "3 месяца безлимит — 999 ₽",
-    "sub_30d_699": "Год безлимит — 2999 ₽",
 }
 
 # Безлимитные тарифы с автопродлением (Robokassa Recurring)
-RECURRING_PLAN_KEYS = frozenset({"sub_m_111", "sub_m_555", "sub_m_999", "sub_7d_399", "sub_14d_499", "sub_30d_699"})
+RECURRING_PLAN_KEYS = frozenset({"sub_m_111", "sub_m_555", "sub_m_999"})
 
 PLAN_PRICE_KOPECKS = {
     "sub_m_111": 11100,
     "sub_m_555": 55500,
     "sub_m_999": 99900,
-    "sub_10_169": 16900,
-    "sub_7d_399": 35900,
-    "sub_14d_499": 99900,
-    "sub_30d_699": 299900,
 }
 
 PLAN_DAYS = {
     "sub_m_111": 31,
     "sub_m_555": 31,
     "sub_m_999": 31,
-    "sub_7d_399": 31,
-    "sub_14d_499": 93,
-    "sub_30d_699": 365,
 }
 
 PRICE_TO_PLAN_KEY = {
     11100: "sub_m_111",
     55500: "sub_m_555",
     99900: "sub_m_999",
-    16900: "sub_10_169",
-    35900: "sub_7d_399",
-    299900: "sub_30d_699",
 }
 
 REFERRAL_GIFT_QUESTIONS = 5
@@ -2654,6 +2641,9 @@ async def send_post_reading_actions(
         await send_zero_balance(chat_id)
     else:
         await ensure_main_reply_keyboard(chat_id)
+
+# Слать ли напоминания тем, кто начал оплату и не закончил. Выключено (13.11.2026).
+PAYMENT_NURTURE_MESSAGES = False
 
 NURTURE_DELAYS_INTENT = (
     timedelta(minutes=30),
@@ -3097,9 +3087,6 @@ async def apply_subscription_payment(chat_id: int, selected_price: int) -> bool:
         11100: "31d",
         55500: "31d",
         99900: "31d",
-        16900: "10",
-        35900: "31d",
-        299900: "365d",
     }
     selected_type = prices.get(selected_price)
     if not selected_type:
@@ -3833,10 +3820,13 @@ async def payment_nurture_loop():
                 if user_data.is_telegram_blocked(chat_id):
                     payment_nurture.mark_completed(chat_id)
                     continue
-                if stage == "checkout":
-                    await send_nurture_checkout(chat_id, rec, step)
-                else:
-                    await send_nurture_intent(chat_id, step)
+                # Напоминания «вы не оплатили» выключены по решению Роксаны (13.11.2026):
+                # цикл только проверяет, не прошла ли оплата, и молча закрывает запись.
+                if PAYMENT_NURTURE_MESSAGES:
+                    if stage == "checkout":
+                        await send_nurture_checkout(chat_id, rec, step)
+                    else:
+                        await send_nurture_intent(chat_id, step)
                 payment_nurture.bump_step(chat_id)
             except Exception as exc:
                 if mark_unreachable_from_exc(chat_id, exc):
@@ -9116,8 +9106,121 @@ async def compat_pay_stars_cb(call: CallbackQuery):
     )
 
 
+# ---------- подписка за звёзды Telegram (разово, без автопродления)
+
+
+def sub_stars_kb() -> types.InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for plan_key, stars in sub_stars.PLAN_STARS.items():
+        rub = PLAN_PRICE_KOPECKS[plan_key] // 100
+        kb.row(
+            types.InlineKeyboardButton(
+                text=f"Месяц безлимит ({rub} ₽) — {stars} ⭐", callback_data=f"substars:{plan_key}"
+            )
+        )
+    kb.row(types.InlineKeyboardButton(text=BACK_BUTTON_TEXT, callback_data="substars_back"))
+    return kb.as_markup()
+
+
+SUB_STARS_TEXT = (
+    "Оплата звёздами Telegram\n\n"
+    "Безлимитные расклады на 31 день. Это разовая покупка: звёзды списываются один раз, "
+    "сама подписка не продлевается.\n\n"
+    "Картой или СБП выйдет дешевле."
+)
+
+
+@dp.callback_query(F.data == "substars_menu")
+async def sub_stars_menu_cb(call: CallbackQuery):
+    if not (PAYMENTS_ENABLED and compat_paid.stars_enabled()):
+        await call.answer("Оплата звёздами сейчас недоступна", show_alert=True)
+        return
+    await call.answer()
+    analytics.track("sub_stars_menu", user_id=call.message.chat.id)
+    try:
+        await call.message.edit_text(SUB_STARS_TEXT, reply_markup=sub_stars_kb())
+    except Exception:
+        await bot.send_message(call.message.chat.id, SUB_STARS_TEXT, reply_markup=sub_stars_kb())
+
+
+@dp.callback_query(F.data == "substars_back")
+async def sub_stars_back_cb(call: CallbackQuery):
+    await call.answer()
+    chat_id = call.message.chat.id
+    text = subscription_intro_text(chat_id) + REFERRAL_HINT
+    try:
+        await call.message.edit_text(text, reply_markup=sub(chat_id))
+    except Exception:
+        await bot.send_message(chat_id, text, reply_markup=sub(chat_id))
+
+
+@dp.callback_query(F.data.startswith("substars:"))
+async def sub_stars_buy_cb(call: CallbackQuery):
+    plan_key = call.data.split(":", 1)[1]
+    if not (PAYMENTS_ENABLED and compat_paid.stars_enabled()) or plan_key not in sub_stars.PLAN_STARS:
+        await call.answer("Оплата звёздами сейчас недоступна", show_alert=True)
+        return
+    await call.answer()
+    analytics.track("sub_stars_click", user_id=call.message.chat.id, properties={"plan": plan_key})
+    await bot.send_invoice(
+        call.message.chat.id,
+        title="Месяц безлимит",
+        description="Безлимитные расклады на 31 день. Разовая покупка, без автопродления.",
+        payload=sub_stars.payload(plan_key),
+        provider_token="",
+        currency="XTR",
+        prices=[types.LabeledPrice(label="Месяц безлимит", amount=sub_stars.PLAN_STARS[plan_key])],
+    )
+
+
+async def sub_stars_successful_payment(message: types.Message) -> None:
+    sp = message.successful_payment
+    chat_id = message.chat.id
+    plan_key = sub_stars.parse_payload(sp.invoice_payload)
+    if not plan_key or sp.currency != "XTR":
+        logging.warning("unexpected sub stars payload=%s", sp.invoice_payload)
+        return
+    created, _rec = await asyncio.to_thread(
+        sub_stars_payments.register,
+        sp.telegram_payment_charge_id,
+        chat_id=chat_id,
+        plan_key=plan_key,
+        stars=int(sp.total_amount),
+    )
+    if not created:
+        return
+    user_data.extend_subscription(chat_id, days=sub_stars.DAYS)
+    payment_nurture.mark_completed(chat_id)
+    analytics.track(
+        "payment_succeeded",
+        user_id=chat_id,
+        properties={
+            "plan": plan_key,
+            "provider": "stars",
+            "amount_stars": int(sp.total_amount),
+            "recurring": False,
+        },
+        dedupe_key=f"payment:stars:{sp.telegram_payment_charge_id}",
+    )
+    end = user_data.get_subscription_end(chat_id)
+    end_s = end.strftime("%d.%m.%Y") if end else "—"
+    await bot.send_message(
+        chat_id,
+        f"Оплата прошла! Безлимит до {end_s} 🎉\n\nПодписка за звёзды сама не продлевается.",
+        reply_markup=main_kb(chat_id),
+    )
+
+
 @dp.pre_checkout_query()
 async def compat_pre_checkout(query: types.PreCheckoutQuery):
+    if sub_stars.parse_payload(query.invoice_payload):
+        if PAYMENTS_ENABLED and compat_paid.stars_enabled() and sub_stars.is_valid_checkout(
+            query.invoice_payload, query.currency, int(query.total_amount)
+        ):
+            await query.answer(ok=True)
+        else:
+            await query.answer(ok=False, error_message="Этот счёт устарел — откройте тарифы заново.")
+        return
     invite_id = compat_paid.parse_stars_payload(query.invoice_payload)
     ok = bool(
         invite_id
@@ -9135,6 +9238,9 @@ async def compat_pre_checkout(query: types.PreCheckoutQuery):
 @dp.message(F.successful_payment)
 async def compat_successful_payment(message: types.Message):
     sp = message.successful_payment
+    if sub_stars.parse_payload(sp.invoice_payload):
+        await sub_stars_successful_payment(message)
+        return
     invite_id = compat_paid.parse_stars_payload(sp.invoice_payload)
     if not invite_id or sp.currency != "XTR":
         logging.warning("unexpected successful_payment payload=%s", sp.invoice_payload)
@@ -13171,6 +13277,8 @@ def sub(chat_id: Optional[int] = None):
     markup.row(types.InlineKeyboardButton(text="Месяц безлимит — 111 ₽", callback_data="sub_m_111"))
     markup.row(types.InlineKeyboardButton(text="Месяц безлимит — 555 ₽", callback_data="sub_m_555"))
     markup.row(types.InlineKeyboardButton(text="Месяц безлимит — 999 ₽", callback_data="sub_m_999"))
+    if PAYMENTS_ENABLED and compat_paid.stars_enabled():
+        markup.row(types.InlineKeyboardButton(text="⭐ Оплатить звёздами", callback_data="substars_menu"))
     if chat_id is not None and user_data.is_auto_renew_enabled(chat_id):
         markup.row(
             types.InlineKeyboardButton(
@@ -13195,9 +13303,16 @@ async def submonth(call: CallbackQuery):
         return
     message = call.message
     chat_id = message.chat.id
-    prices = PLAN_PRICE_KOPECKS
-    selected_price = prices.get(call.data, 15000)
     plan_key = call.data
+    if plan_key not in PLAN_PRICE_KOPECKS:
+        # старая кнопка из прошлых сообщений — тариф больше не продаётся
+        await call.answer("Этот тариф больше не продаётся — выберите из списка.", show_alert=True)
+        try:
+            await call.message.edit_reply_markup(reply_markup=sub(chat_id))
+        except Exception:
+            pass
+        return
+    selected_price = PLAN_PRICE_KOPECKS[plan_key]
     await call.message.delete()
 
     email = user_data.get_user_email(chat_id)

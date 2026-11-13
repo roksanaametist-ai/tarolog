@@ -357,3 +357,73 @@ def test_paid_stars_delivers_once_partner_free(monkeypatch):
     assert done["full"]["summary"] == inv["full"]["summary"]
     assert len(full_headers(b)) == 1
     assert any("откликнулся" in t for t in session.texts(a))
+
+
+def _sub_stars_update(uid: int, plan_key: str, charge: str, amount: int):
+    from datetime import datetime
+
+    from aiogram.types import Chat, Message, SuccessfulPayment, Update
+
+    return Update(
+        update_id=next(_ids),
+        message=Message(
+            message_id=next(_ids),
+            date=datetime.now(),
+            chat=Chat(id=uid, type="private"),
+            from_user=h.user(uid),
+            successful_payment=SuccessfulPayment(
+                currency="XTR",
+                total_amount=amount,
+                invoice_payload=main.sub_stars.payload(plan_key),
+                telegram_payment_charge_id=charge,
+                provider_payment_charge_id="",
+            ),
+        ),
+    )
+
+
+def test_sub_stars_button_and_grant_once(monkeypatch):
+    monkeypatch.setattr(main, "PAYMENTS_ENABLED", True)
+    monkeypatch.setenv("COMPAT_STARS_ENABLED", "1")
+    a = new_uid()
+    make_old_user(a)
+    kb = main.sub(a)
+    datas = [b.callback_data for row in kb.inline_keyboard for b in row]
+    assert "substars_menu" in datas
+    assert not any(d in datas for d in ("sub_7d_399", "sub_14d_499", "sub_30d_699", "sub_10_169"))
+    feed(h.cb_update(a, "substars_menu"))
+    assert session.find_button(a, "substars:sub_m_111")
+    assert not main.user_has_active_subscription(a)
+    feed(_sub_stars_update(a, "sub_m_111", f"sub-{a}", 111))
+    end1 = main.user_data.get_subscription_end(a)
+    assert main.user_has_active_subscription(a)
+    assert not main.user_data.is_auto_renew_enabled(a)
+    # повтор того же платежа — срок не продлевается второй раз
+    feed(_sub_stars_update(a, "sub_m_111", f"sub-{a}", 111))
+    assert main.user_data.get_subscription_end(a) == end1
+    assert any("Безлимит до" in t for t in session.texts(a))
+
+
+def test_sub_stars_hidden_when_off(monkeypatch):
+    monkeypatch.setattr(main, "PAYMENTS_ENABLED", True)
+    monkeypatch.delenv("COMPAT_STARS_ENABLED", raising=False)
+    datas = [b.callback_data for row in main.sub(None).inline_keyboard for b in row]
+    assert "substars_menu" not in datas
+
+
+def test_sub_stars_prices_above_card():
+    for plan_key, stars in main.sub_stars.PLAN_STARS.items():
+        assert main.sub_stars.is_valid_checkout(main.sub_stars.payload(plan_key), "XTR", stars)
+        assert not main.sub_stars.is_valid_checkout(main.sub_stars.payload(plan_key), "XTR", stars - 1)
+        # 1 звезда стоит покупателю больше 1 ₽ — звёздами дороже, чем картой
+        assert stars >= main.PLAN_PRICE_KOPECKS[plan_key] // 100
+    assert main.sub_stars.parse_payload("substars:sub_7d_399") is None
+    assert main.compat_paid.parse_stars_payload(main.sub_stars.payload("sub_m_111")) is None
+
+
+def test_old_plan_button_does_not_bill():
+    a = new_uid()
+    make_old_user(a)
+    main.user_data.set_user_email(a, "t@example.com") if hasattr(main.user_data, "set_user_email") else None
+    feed(h.cb_update(a, "sub_7d_399"))
+    assert not session.find_button(a, "rcons_pay:sub_7d_399")
