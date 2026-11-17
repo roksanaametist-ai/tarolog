@@ -272,7 +272,8 @@ def recurring_accepted(body: Optional[str], inv_id: int) -> Optional[bool]:
     import re
 
     text = (body or "").strip()
-    m = re.fullmatch(r"OK\s*(\d+)?", text, flags=re.IGNORECASE)
+    # Робокасса отвечает «OK+<InvoiceID>» (бывает и без «+»).
+    m = re.fullmatch(r"OK\s*\+?\s*(\d+)?", text, flags=re.IGNORECASE)
     if not m:
         return None
     if m.group(1) is not None and int(m.group(1)) != int(inv_id):
