@@ -157,6 +157,8 @@ async def send_messages(
     recipients: list[int],
 ) -> tuple[int, int]:
     bot = Bot(token)
+    from _broadcast_retry import install_retry_after  # [fix-039] FloodWait
+    install_retry_after(bot)
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="⭐ Оставить отзыв", url=DEEP_LINK)],

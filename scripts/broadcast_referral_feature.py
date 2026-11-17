@@ -27,7 +27,8 @@ if not DATA_DIR.exists():
 
 USER_DATA = DATA_DIR / "user_data.json"
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-DRY_RUN = "--dry-run" in sys.argv
+# [fix-039] по умолчанию только просмотр; отправка — только с --send
+DRY_RUN = "--send" not in sys.argv
 
 
 def load_user_ids() -> list[int]:
@@ -65,6 +66,8 @@ async def main() -> None:
         raise SystemExit("Нет TELEGRAM_TOKEN")
 
     bot = Bot(token=TOKEN)
+    from _broadcast_retry import install_retry_after  # [fix-039] FloodWait
+    install_retry_after(bot)
     me = await bot.get_me()
     username = me.username
     ids = load_user_ids()

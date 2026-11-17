@@ -117,6 +117,8 @@ async def send_invites(
 ) -> tuple[int, int]:
     _backup(data_dir)
     bot = Bot(token)
+    from _broadcast_retry import install_retry_after  # [fix-039] FloodWait
+    install_retry_after(bot)
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [

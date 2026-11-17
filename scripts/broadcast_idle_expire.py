@@ -76,6 +76,8 @@ async def send_messages(
     recipients: list[int],
 ) -> tuple[int, int]:
     bot = Bot(token)
+    from _broadcast_retry import install_retry_after  # [fix-039] FloodWait
+    install_retry_after(bot)
     kb = ask_kb()
     campaign = history.setdefault(
         CAMPAIGN_ID,
