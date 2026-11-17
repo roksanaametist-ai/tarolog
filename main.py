@@ -5647,7 +5647,9 @@ async def _call_openai_chat(
 ) -> str:
     if openai_client is None:
         raise RuntimeError("OPENAI_API_KEY не задан")
-    response = openai_client.chat.completions.create(
+    # [fix-039] синхронный SDK — в отдельном потоке, чтобы не замораживать бота
+    response = await asyncio.to_thread(
+        openai_client.chat.completions.create,
         model=OPENAI_TAROT_MODEL,
         temperature=temperature,
         max_tokens=max_tokens,
@@ -5675,7 +5677,9 @@ async def _call_groq_chat(
     for model in models:
         for attempt in range(2):
             try:
-                response = client.chat.completions.create(
+                # [fix-039] в отдельном потоке: бот не ждёт Groq
+                response = await asyncio.to_thread(
+                    client.chat.completions.create,
                     model=model,
                     temperature=temperature,
                     max_tokens=max_tokens,
@@ -5814,7 +5818,8 @@ async def generate_followup_questions(
                 max_tokens=250,
             )
         else:
-            response = client.chat.completions.create(
+            response = await asyncio.to_thread(  # [fix-039]
+                client.chat.completions.create,
                 model=TAROT_MODEL,
                 temperature=0.6,
                 max_tokens=250,
