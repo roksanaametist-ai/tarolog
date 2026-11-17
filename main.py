@@ -362,6 +362,11 @@ BOT_STATIC_ADMINS = _parse_admin_id_set(
     os.getenv("ADMIN_IDS", ""),
     os.getenv("BOT_ADMIN_IDS", ""),
 ) or {_BOOTSTRAP_ADMIN_ID}
+if BOT_STATIC_ADMINS == {_BOOTSTRAP_ADMIN_ID} and not (
+    os.getenv("ADMIN_IDS", "").strip() or os.getenv("BOT_ADMIN_IDS", "").strip()
+):
+    # [fix-039] ID владелицы оставлен; просим явно задать ADMIN_IDS на сервере
+    logging.warning("ADMIN_IDS не задан — админ по умолчанию (bootstrap ID). Задайте ADMIN_IDS в .env")
 _CONSULT_NOTIFY_EXTRA = {
     int(x.strip())
     for x in os.getenv("CONSULTATION_NOTIFY_IDS", "").split(",")
@@ -411,6 +416,28 @@ class ClearTelegramBlockedMiddleware(BaseMiddleware):
 dp.message.outer_middleware(ClearTelegramBlockedMiddleware())
 dp.callback_query.outer_middleware(ClearTelegramBlockedMiddleware())
 dp.callback_query.outer_middleware(AnalyticsCallbackMiddleware())
+
+
+@dp.errors()
+async def global_error_handler(event) -> bool:
+    """[fix-039] Любая ошибка в хендлере: пишем в лог, бот продолжает работать, кнопка не «крутится»."""
+    exc = getattr(event, "exception", None)
+    update = getattr(event, "update", None)
+    logging.error(
+        "Unhandled error in handler (update_id=%s): %r",
+        getattr(update, "update_id", None), exc, exc_info=exc,
+    )
+    try:
+        cq = getattr(update, "callback_query", None)
+        if cq is not None:
+            await cq.answer("Что-то пошло не так, попробуйте ещё раз 🙏", show_alert=False)
+        msg = getattr(update, "message", None) or getattr(cq, "message", None)
+        chat_id = getattr(getattr(msg, "chat", None), "id", None)
+        if chat_id and exc is not None:
+            mark_unreachable_from_exc(int(chat_id), exc)
+    except Exception:
+        pass
+    return True
 
 
 class Form(StatesGroup):
