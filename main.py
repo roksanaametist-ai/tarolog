@@ -3865,8 +3865,7 @@ async def charge_recurring_subscription(chat_id: int) -> bool:
         if not prev:
             logging.warning("Robokassa recurring skipped: no prev invoice chat_id=%s", chat_id)
             return False
-        order_manager.increment_order_number()
-        inv_id = int(order_manager.get_order_number())
+        inv_id = next_robokassa_inv_id()  # [fix-039] не занимаем номер существующего счёта
         amount_rub = int(price) / 100.0
         shp = {"chat_id": str(chat_id), "plan": plan_key}
         robokassa_store.put_pending(
@@ -4300,6 +4299,19 @@ class OrderNumber:
         return self.order_number
 
 order_manager = OrderNumber(data_file("order_number.json"))
+
+
+def next_robokassa_inv_id() -> int:
+    """[fix-039] Следующий номер счёта, который ещё не занят в хранилище Робокассы."""
+    from bot_core import robokassa_store
+
+    for _ in range(1000):
+        order_manager.increment_order_number()
+        inv_id = int(order_manager.get_order_number())
+        if robokassa_store.is_free(inv_id):
+            return inv_id
+        logging.error("Robokassa inv_id=%s already taken, skipping to next", inv_id)
+    raise RuntimeError("no free Robokassa inv_id after 1000 attempts")
 
 #-----------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -9050,8 +9062,7 @@ async def compat_pay_rk_cb(call: CallbackQuery):
             inv_id = old  # тот же счёт — чтобы не плодить вторые оплаты
     try:
         if not inv_id:
-            order_manager.increment_order_number()
-            inv_id = int(order_manager.get_order_number())
+            inv_id = next_robokassa_inv_id()  # [fix-039] не занимаем номер существующего счёта
             robokassa_store.put_pending(
                 inv_id,
                 chat_id=chat_id,
@@ -13504,8 +13515,7 @@ async def _start_robokassa_checkout(
     if not robokassa.is_configured():
         raise ValueError("Robokassa не настроена (LOGIN/PASSWORD1/PASSWORD2)")
 
-    order_manager.increment_order_number()
-    inv_id = int(order_manager.get_order_number())
+    inv_id = next_robokassa_inv_id()  # [fix-039] не занимаем номер существующего счёта
     amount_rub = int(selected_price) / 100.0
     shp = {"chat_id": str(chat_id), "plan": plan_key}
     # Автопродление — только если магазин одобрен И пользователь поставил галочку

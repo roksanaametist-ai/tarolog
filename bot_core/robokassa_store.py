@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -100,9 +101,26 @@ def put_pending(
             record.setdefault(key, value)
     with _FileLock(path):
         data = _load(path)
+        existing = data["invoices"].get(str(int(inv_id)))
+        if isinstance(existing, dict):
+            # [fix-039] никогда не перезаписываем существующий (тем более оплаченный) счёт
+            logging.getLogger(__name__).error(
+                "Robokassa put_pending refused: inv_id=%s already exists (status=%s, chat_id=%s)",
+                inv_id, existing.get("status"), existing.get("chat_id"),
+            )
+            raise InvoiceExistsError(int(inv_id))
         data["invoices"][str(int(inv_id))] = record
         _save(path, data)
     return record
+
+
+class InvoiceExistsError(ValueError):
+    """Счёт с таким номером уже есть в хранилище."""
+
+
+def is_free(inv_id: int) -> bool:
+    """[fix-039] True, если номер счёта ещё не занят."""
+    return get_invoice(inv_id) is None
 
 
 def get_invoice(inv_id: int) -> Optional[dict[str, Any]]:
