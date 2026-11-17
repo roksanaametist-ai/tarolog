@@ -115,6 +115,15 @@ def moscow_today() -> str:
     return now_moscow().strftime("%Y-%m-%d")
 
 analytics = AnalyticsStore(data_file("analytics.sqlite3"))
+
+
+def track_event(name: str, chat_id: Optional[int], properties: Optional[dict] = None, **kw) -> None:
+    """[fix-039] Событие аналитики; ошибка записи никогда не ломает сценарий."""
+    try:
+        analytics.track(name, user_id=chat_id, properties=properties or {}, **kw)
+    except Exception:
+        logging.exception("analytics.track failed: %s", name)
+
 operational_store = OperationalStore(
     data_file("bot_state.sqlite3"),
     mirror_json=os.getenv("BOT_JSON_MIRROR", "1").strip() != "0",
@@ -1083,10 +1092,18 @@ class UserData:
         self, chat_id: int, *, reason: str = "forbidden"
     ) -> None:
         u = self._ensure_user(chat_id)
+        was_blocked = bool(u.get("tg_blocked"))
         u["tg_blocked"] = True
         u["tg_blocked_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         u["tg_blocked_reason"] = str(reason or "forbidden")[:80]
         self.save_data()
+        if not was_blocked:
+            # [fix-039] событие только при переходе «доступен → заблокировал», с датой
+            track_event(
+                "bot_blocked",
+                chat_id,
+                {"reason": u["tg_blocked_reason"], "blocked_at": u["tg_blocked_at"]},
+            )
 
     def clear_telegram_blocked(self, chat_id: int) -> bool:
         key = str(chat_id)
@@ -2449,6 +2466,14 @@ BALANCE_EMPTY_HINT = (
 
 def zero_balance_kb(chat_id: Optional[int] = None) -> types.InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+    if PAYMENTS_ENABLED:
+        # [fix-039] прямой путь к оплате с экрана «расклады закончились»
+        kb.row(
+            types.InlineKeyboardButton(
+                text=f"💳 Безлимит от {min(PLAN_PRICE_KOPECKS.values()) // 100} ₽",
+                callback_data="paywall_tariffs",
+            )
+        )
     kb.row(
         types.InlineKeyboardButton(
             text=f"📤 Позвать друга (+{REFERRAL_JOIN_BONUS})",
@@ -2482,6 +2507,7 @@ async def send_zero_balance(
         )
     send = answer or (lambda t, **kw: bot.send_message(chat_id, t, **kw))
     msg = await send(text, reply_markup=zero_balance_kb(chat_id))
+    track_event("paywall_shown", chat_id, {"payments_enabled": bool(PAYMENTS_ENABLED)})
     if getattr(msg, "message_id", None):
         await remember_inline_menu(chat_id, msg.message_id)
     try:
@@ -13023,24 +13049,37 @@ async def open_subscription_menu(chat_id: int, state: FSMContext, *, answer) -> 
         if getattr(msg, "message_id", None):
             await remember_service_msg(chat_id, msg.message_id)
         return
+    # [fix-039] сначала тарифы; почту спросим после выбора тарифа (submonth)
     intro = subscription_intro_text(chat_id) + REFERRAL_HINT
-    if email:
-        await cleanup_service_msgs(chat_id)
-        msg = await answer(intro, reply_markup=sub(chat_id))
-        if getattr(msg, "message_id", None):
-            await remember_service_msg(chat_id, msg.message_id)
-    else:
-        await cleanup_service_msgs(chat_id)
-        msg = await answer(
-            "Для того чтобы оформить подписку необходимо ввести почту. "
-            "\n\n"
-            "Введите почту."
-            + REFERRAL_HINT,
-            reply_markup=back_kb(),
-        )
-        if getattr(msg, "message_id", None):
-            await remember_service_msg(chat_id, msg.message_id)
-        await state.set_state(Email.email_check)
+    await cleanup_service_msgs(chat_id)
+    msg = await answer(intro, reply_markup=sub(chat_id))
+    if getattr(msg, "message_id", None):
+        await remember_service_msg(chat_id, msg.message_id)
+    track_event("tariffs_shown", chat_id, {"source": "menu", "has_email": bool(email)})
+
+
+async def show_tariffs(chat_id: int, *, source: str) -> None:
+    """[fix-039] Экран с текущими тарифами (для кнопки на нулевом балансе и старых кнопок sub_*)."""
+    if not PAYMENTS_ENABLED:
+        await send_referral_info(chat_id)
+        return
+    if not user_has_active_subscription(chat_id):
+        payment_nurture.set_intent(chat_id)
+    await cleanup_service_msgs(chat_id)
+    msg = await bot.send_message(
+        chat_id, subscription_intro_text(chat_id) + REFERRAL_HINT, reply_markup=sub(chat_id)
+    )
+    if getattr(msg, "message_id", None):
+        await remember_service_msg(chat_id, msg.message_id)
+    track_event("tariffs_shown", chat_id, {"source": source})
+
+
+@dp.callback_query(F.data == "paywall_tariffs")
+async def paywall_tariffs_cb(call: CallbackQuery, state: FSMContext):
+    """[fix-039] Кнопка «Безлимит от 111 ₽» на экране нулевого баланса."""
+    await call.answer()
+    await state.clear()
+    await show_tariffs(call.message.chat.id, source="zero_balance")
 
 
 async def grant_channel_bonus(chat_id: int) -> None:
@@ -13103,8 +13142,17 @@ async def email_box(message: Message, state: FSMContext):
         user_data.set_user_email(chat_id, email_notvalid)
         if not user_has_active_subscription(chat_id):
             payment_nurture.set_intent(chat_id)
+        pending_plan = (await state.get_data()).get("pending_plan")
         await state.clear()
         await cleanup_service_msgs(chat_id)
+        track_event("email_entered", chat_id, {"plan": pending_plan or ""})
+        if pending_plan in PLAN_PRICE_KOPECKS:
+            # [fix-039] тариф уже выбран — сразу продолжаем к оплате
+            await _plan_checkout(
+                chat_id, pending_plan, PLAN_PRICE_KOPECKS[pending_plan],
+                user_data.get_user_email(chat_id) or email_notvalid,
+            )
+            return
         await message.answer(
             "Email установлен.\n\n" + subscription_intro_text(chat_id) + REFERRAL_HINT,
             reply_markup=sub(chat_id),
@@ -13323,7 +13371,7 @@ def sub(chat_id: Optional[int] = None):
     return markup.as_markup()
 
 @dp.callback_query(lambda call: call.data.startswith("sub_"))
-async def submonth(call: CallbackQuery):
+async def submonth(call: CallbackQuery, state: FSMContext):
     logger.log_command(call.message.chat.id, call.message.text)
     if not PAYMENTS_ENABLED:
         await call.answer("Оплата временно выключена", show_alert=True)
@@ -13337,26 +13385,41 @@ async def submonth(call: CallbackQuery):
     chat_id = message.chat.id
     plan_key = call.data
     if plan_key not in PLAN_PRICE_KOPECKS:
-        # старая кнопка из прошлых сообщений — тариф больше не продаётся
-        await call.answer("Этот тариф больше не продаётся — выберите из списка.", show_alert=True)
+        # старая кнопка из прошлых сообщений (sub_10_169 и др.) — тариф больше не продаётся.
+        # [fix-039] убираем старые кнопки и присылаем свежий экран с текущими тарифами
+        await call.answer("Этот тариф больше не продаётся — вот актуальные.", show_alert=True)
         try:
-            await call.message.edit_reply_markup(reply_markup=sub(chat_id))
+            await call.message.edit_reply_markup(reply_markup=None)
         except Exception:
             pass
+        await show_tariffs(chat_id, source="legacy_button")
         return
     selected_price = PLAN_PRICE_KOPECKS[plan_key]
     await call.message.delete()
 
     email = user_data.get_user_email(chat_id)
     if not email:
-        await bot.send_message(
+        # [fix-039] почту для чека (54-ФЗ) спрашиваем после выбора тарифа, перед ссылкой
+        await state.set_state(Email.email_check)
+        await state.update_data(pending_plan=plan_key)
+        msg = await bot.send_message(
             chat_id,
-            "Для оплаты сначала укажите email через «💳 Оформить подписку».",
+            f"Вы выбрали: {PLAN_LABELS.get(plan_key, 'Подписка')}.\n\n"
+            "Напишите вашу почту — на неё придёт чек об оплате.",
             reply_markup=back_kb(),
         )
+        if getattr(msg, "message_id", None):
+            await remember_service_msg(chat_id, msg.message_id)
+        track_event("email_requested", chat_id, {"plan": plan_key, "where": "after_tariff"})
         await call.answer()
         return
 
+    await _plan_checkout(chat_id, plan_key, selected_price, email)
+    await call.answer()
+
+
+async def _plan_checkout(chat_id: int, plan_key: str, selected_price: int, email: str) -> None:
+    """[fix-039] Оплата выбранного тарифа (вынесено из submonth, чтобы продолжать после ввода почты)."""
     try:
         if PAYMENT_PROVIDER == "robokassa":
             if plan_key in RECURRING_PLAN_KEYS and (recurring_available() or recurring_preview(chat_id)):
@@ -13421,7 +13484,7 @@ async def submonth(call: CallbackQuery):
             pay_kb.row(types.InlineKeyboardButton(text="👥 Пригласить друзей", callback_data="nurture_referral"))
             pay_kb.row(types.InlineKeyboardButton(text=BACK_BUTTON_TEXT, callback_data="back_to_main"))
             await bot.send_message(
-                chat_id=message.chat.id,
+                chat_id=chat_id,
                 text=(
                     f"Оплата: {PLAN_LABELS.get(plan_key, 'Подписка')}\n\n"
                     + "Нажмите кнопку ниже — откроется безопасная страница YooKassa."
@@ -13431,13 +13494,10 @@ async def submonth(call: CallbackQuery):
                 reply_markup=pay_kb.as_markup(),
             )
             asyncio.create_task(
-                check_payment_status(payment_id, message.chat.id, selected_price, plan_key=plan_key)
+                check_payment_status(payment_id, chat_id, selected_price, plan_key=plan_key)
             )
     except (ValueError, TypeError) as e:
         await bot.send_message(chat_id, f"Оплата временно недоступна: {e}", reply_markup=back_kb())
-        await call.answer()
-        return
-    await call.answer()
 
 
 @dp.callback_query(F.data == "cancel_auto_renew")
@@ -13465,6 +13525,16 @@ async def cancel_auto_renew_cb(call: CallbackQuery):
         )
     except Exception as exc:
         logging.warning("consent log (cancel) failed: %s", exc)
+    # [fix-039] причину бот не спрашивает — пишем, откуда отмена
+    track_event(
+        "auto_renew_cancelled",
+        chat_id,
+        {
+            "reason": "user_button",
+            "plan": rec_before.get("subscription_plan_key") or "",
+            "amount_kopecks": rec_before.get("subscription_price"),
+        },
+    )
     end = user_data.get_subscription_end(chat_id)
     end_note = ""
     if end and end > datetime.now():
@@ -14865,6 +14935,7 @@ async def main():
                 try:
                     user_data.disable_auto_renew(int(uid_s))
                     disabled += 1
+                    track_event("auto_renew_cancelled", int(uid_s), {"reason": "payments_disabled"})
                 except Exception:
                     pass
         logging.info(
