@@ -261,7 +261,26 @@ def request_recurring(
         return resp.read().decode("utf-8", errors="replace")
 
 
-OPSTATE_URL = "https://auth.robokassa.ru/Merchant/WebService/Service.asmx/OpStateExt"
+def recurring_accepted(body: Optional[str], inv_id: int) -> Optional[bool]:
+    """[fix-039] Разбор ответа Recurring.
+
+    True  — точный ответ «OK<InvoiceID>» (или голое «OK»): запрос на списание принят.
+    None  — всё остальное (HTML, текст ошибки, пусто): исход неизвестен,
+            выяснять через OpState, новый счёт не выставлять.
+    Раньше было `"OK" in body.upper()` — срабатывало на любой странице со словом ROBOKASSA.
+    """
+    import re
+
+    text = (body or "").strip()
+    m = re.fullmatch(r"OK\s*(\d+)?", text, flags=re.IGNORECASE)
+    if not m:
+        return None
+    if m.group(1) is not None and int(m.group(1)) != int(inv_id):
+        return None
+    return True
+
+
+OPSTATE_URL ="https://auth.robokassa.ru/Merchant/WebService/Service.asmx/OpStateExt"
 
 # Коды состояния OpState: 5 создан, 10 отменён (денег нет), 50 деньги получены, идёт зачисление,
 # 60 возвращены покупателю, 80 приостановлен, 100 оплачен.

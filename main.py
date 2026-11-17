@@ -3891,12 +3891,17 @@ async def charge_recurring_subscription(chat_id: int) -> bool:
             logging.warning("Robokassa recurring request failed chat_id=%s: %s", chat_id, e)
             user_data.patch_user(chat_id, sr.pending_changes(fresh, inv_id, datetime.now()))
             return None
-        if "OK" in (body or "").upper():
-            # P-2: помечаем период как списанный; продление выдаст ResultURL (fulfill)
-            user_data.patch_user(chat_id, sr.pending_changes(fresh, inv_id, datetime.now()))
+        # P-2: помечаем период как «ждёт подтверждения»; продление выдаст ResultURL (fulfill)
+        user_data.patch_user(chat_id, sr.pending_changes(fresh, inv_id, datetime.now()))
+        if robokassa.recurring_accepted(body, inv_id):
             return True
-        logging.warning("Robokassa recurring unexpected body chat_id=%s: %s", chat_id, (body or "")[:200])
-        return False
+        # [fix-039] Непонятный ответ — не «неудача»: деньги могли списаться. Новый счёт не
+        # выставляем, через 30 мин resolve_pending_renewal спросит OpState по этому же InvId.
+        logging.warning(
+            "Robokassa recurring unclear body chat_id=%s inv=%s: %s",
+            chat_id, inv_id, (body or "")[:200],
+        )
+        return None
 
     pmid = user_data.get_payment_method_id(chat_id)
     if not pmid:
@@ -4005,6 +4010,18 @@ async def handle_recurring_failure(chat_id: int) -> None:
         "payment_failed",
         user_id=chat_id,
         properties={"recurring": True, "attempt": fail_count},
+    )
+    # [fix-039] отдельное событие продления — для отчёта об оттоке
+    analytics.track(
+        "renew_failed",
+        user_id=chat_id,
+        properties={
+            "provider": str(u.get("payment_provider") or PAYMENT_PROVIDER or ""),
+            "plan": str(u.get("subscription_plan_key") or ""),
+            "amount_kopecks": int(u.get("subscription_price") or 0),
+            "attempt": fail_count,
+            "auto_renew_disabled": fail_count >= 3,
+        },
     )
 
     if fail_count >= 3:

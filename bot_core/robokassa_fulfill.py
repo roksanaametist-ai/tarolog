@@ -344,6 +344,28 @@ def _track_payment_succeeded(
         return False
 
 
+def _track_renew_charged(inv_id: int, chat_id: int, plan_key: str, amount_kopecks: int) -> bool:
+    """[fix-039] renew_charged — успешное автопродление (дочерний счёт). Never raises."""
+    try:
+        from analytics.store import AnalyticsStore
+
+        store = AnalyticsStore(_data_dir() / "analytics.sqlite3")
+        return store.track(
+            "renew_charged",
+            user_id=int(chat_id),
+            properties={
+                "payment_id": f"robokassa:{inv_id}",
+                "provider": "robokassa",
+                "plan": plan_key or "unknown",
+                "amount_kopecks": int(amount_kopecks),
+            },
+            dedupe_key=f"renew-charged:robokassa:{inv_id}",
+        )
+    except Exception as exc:
+        logger.warning("analytics renew_charged failed inv_id=%s: %s", inv_id, exc)
+        return False
+
+
 def _fulfill_compat(
     inv_id: int, paid: dict[str, Any], seed: Optional[dict], *, out_sum: Optional[str] = None
 ) -> dict[str, Any]:
@@ -459,6 +481,8 @@ def fulfill_invoice(inv_id: int, *, out_sum: Optional[str] = None) -> dict[str, 
     except OSError:
         pass
     _track_payment_succeeded(inv_id, chat_id, plan_key, amount_kopecks, kind, seed)
+    if kind == "child":
+        _track_renew_charged(inv_id, chat_id, plan_key, amount_kopecks)
     _mark_nurture_done(chat_id)
     _mark_fulfilled(inv_id)
 
