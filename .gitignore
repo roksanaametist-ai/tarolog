@@ -68,3 +68,9 @@ landing/_rkn_out/
 scripts/_robokassa_b64.txt
 scripts/_vnc_receipt_short.txt
 scripts/_patch_robokassa_env.py
+
+# fix-039: базы и бэкапы не в git
+*.sqlite3
+*.sqlite3-*
+*.bak*
+compat_stories/

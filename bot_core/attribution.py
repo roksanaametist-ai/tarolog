@@ -96,6 +96,10 @@ def parse_start_attribution(
     if raw.startswith("c_"):
         try:
             campaign = normalize_tracking_code(raw[2:], field="campaign")
+            # [fix-039] ссылки с сайта: c_site_<страница> — это посетитель сайта
+            # (приветствие сайта), но с точной меткой страницы для отчётов.
+            if campaign == "site" or campaign.startswith("site-"):
+                return StartAttribution("landing", raw, campaign_code=campaign)
             return StartAttribution("campaign", raw, campaign_code=campaign)
         except ValueError:
             return StartAttribution("invalid", raw)
