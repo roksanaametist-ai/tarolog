@@ -17,7 +17,7 @@ from .deck import build_deck, cards_from_webapp_paths
 from .handlers import accept_miniapp_cards, dispatch_update
 from .init_data import max_user_id
 from .jobs import periodic_30day_refill
-from .payments import initialize_payment_file, recurring_billing_loop
+from .payments import initialize_payment_file
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,7 +31,6 @@ async def lifespan(app: FastAPI):
     build_deck()
     initialize_payment_file()
     refill_task = asyncio.create_task(periodic_30day_refill())
-    renew_task = asyncio.create_task(recurring_billing_loop())
     logger.info(
         "MAX bot ready. data_dir=%s admins=%s",
         config.DATA_DIR,
@@ -41,7 +40,6 @@ async def lifespan(app: FastAPI):
         logger.warning("MAX_BOT_TOKEN пуст — отправка сообщений не заработает")
     yield
     refill_task.cancel()
-    renew_task.cancel()
     await api.aclose()
 
 

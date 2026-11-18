@@ -102,10 +102,9 @@ def plans_kb(user_id: int) -> list[dict[str, Any]]:
     from .economy import user_data
 
     rows = [
-        [btn_callback("10 запросов - 169 руб.", "sub_10_169")],
-        [btn_callback("Месяц (безлимит) - 359 руб.", "sub_7d_399")],
-        [btn_callback("3 Месяца (безлимит) - 999 руб.", "sub_14d_499")],
-        [btn_callback("Год (безлимит) - 2999 руб.", "sub_30d_699")],
+        [btn_callback("Месяц безлимит — 111 ₽", "sub_m_111")],
+        [btn_callback("Месяц безлимит — 555 ₽", "sub_m_555")],
+        [btn_callback("Месяц безлимит — 999 ₽", "sub_m_999")],
     ]
     if user_data.is_auto_renew_enabled(user_id):
         rows.append([btn_callback("⏸ Отменить автопродление", "cancel_auto_renew")])

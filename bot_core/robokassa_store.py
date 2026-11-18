@@ -147,6 +147,20 @@ def mark_paid(inv_id: int) -> Optional[dict[str, Any]]:
         return dict(rec)
 
 
+def claim_grant(inv_id: int) -> bool:
+    """[049] Атомарно отметить, что подписка по счёту выдаётся. True — только первому вызову."""
+    path = store_path()
+    with _FileLock(path):
+        data = _load(path)
+        rec = data["invoices"].get(str(int(inv_id)))
+        if not isinstance(rec, dict) or rec.get("granted"):
+            return False
+        rec["granted"] = True
+        data["invoices"][str(int(inv_id))] = rec
+        _save(path, data)
+        return True
+
+
 def mark_notify_sent(inv_id: int) -> None:
     path = store_path()
     with _FileLock(path):

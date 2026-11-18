@@ -180,6 +180,134 @@ def notify_telegram(chat_id: int, text: str) -> bool:
         return False
 
 
+def _max_ssl_context():
+    """certifi + Russian Trusted CA (platform-api2.max.ru), без записи файлов."""
+    import ssl
+
+    try:
+        import certifi
+
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        ctx = ssl.create_default_context()
+    ru = Path(__file__).resolve().parent.parent / "max_bot" / "certs" / "russian_trusted.pem"
+    if ru.is_file():
+        try:
+            ctx.load_verify_locations(cafile=str(ru))
+        except Exception as exc:
+            logger.warning("russian CA load failed: %s", exc)
+    return ctx
+
+
+def notify_max(user_id: int, text: str) -> bool:
+    """[049] Сообщение пользователю MAX через Bot API."""
+    token = (os.getenv("MAX_BOT_TOKEN") or "").strip()
+    if not token:
+        return False
+    base = (os.getenv("MAX_API_BASE") or "https://platform-api2.max.ru").rstrip("/")
+    url = f"{base}/messages?" + urllib.parse.urlencode({"user_id": int(user_id)})
+    body = json.dumps({"text": text[:4000], "notify": True}, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={"Authorization": token, "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20, context=_max_ssl_context()) as resp:
+            return 200 <= resp.status < 300
+    except Exception as exc:
+        logger.warning("max notify failed user_id=%s: %s", user_id, exc)
+        return False
+
+
+def _max_seed(user_id: int) -> Optional[dict]:
+    raw = (os.getenv("MAX_BOT_DATA_DIR") or "").strip()
+    base = Path(raw) if raw else _data_dir()
+    try:
+        with open(base / "user_data_max.json", "r", encoding="utf-8") as handle:
+            ud = json.load(handle)
+        rec = ud.get(str(int(user_id))) if isinstance(ud, dict) else None
+        return rec if isinstance(rec, dict) else None
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def _bump_max_payment_stats(amount_kopecks: int, plan_key: str) -> None:
+    raw = (os.getenv("MAX_BOT_DATA_DIR") or "").strip()
+    path = (Path(raw) if raw else _data_dir()) / "payment_data_max.json"
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data["total_amount"] = int(data.get("total_amount") or 0) + int(amount_kopecks)
+    subs = data.setdefault("subscriptions", {})
+    if isinstance(subs, dict):
+        subs[plan_key] = int(subs.get(plan_key) or 0) + 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, ensure_ascii=False)
+
+
+def _fulfill_max(inv_id: int, paid: dict[str, Any], *, out_sum: Optional[str] = None) -> dict[str, Any]:
+    """[049] Оплата из MAX: безлимит в общем кошельке "max", сообщение в MAX. Без автопродления."""
+    user_id = int(paid["chat_id"])
+    plan_key = str(paid.get("plan_key") or "")
+    amount_kopecks = int(paid.get("amount_kopecks") or 0)
+    if not robokassa_store.claim_grant(inv_id):
+        # этот счёт уже выдан (повторный ResultURL / параллельная проверка)
+        _mark_fulfilled(inv_id)
+        return {"ok": True, "already": True, "chat_id": user_id, "plan_key": plan_key, "platform": "max"}
+
+    seed = _max_seed(user_id)
+    wallet = shared_wallet.extend_subscription(
+        "max",
+        user_id,
+        seed,
+        days=int(PLAN_DAYS.get(plan_key, 31)),
+        changes={
+            "subscription_plan_key": plan_key,
+            "subscription_price": amount_kopecks,
+            "last_robokassa_inv_id": int(inv_id),
+            "payment_provider": "robokassa",
+            "auto_renew": False,
+        },
+    )
+    new_end = str(wallet.get("subscription_end"))
+    try:
+        _bump_max_payment_stats(amount_kopecks, plan_key)
+    except OSError:
+        pass
+    _track_payment_succeeded(inv_id, user_id, plan_key, amount_kopecks, "parent", seed, platform="max")
+    _mark_fulfilled(inv_id)
+
+    end_human = datetime.strptime(new_end, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y")
+    text = (
+        "Оплата прошла успешно ✨\n"
+        f"Месяц безлимит, {amount_kopecks // 100} ₽.\n"
+        f"Безлимит до {end_human}.\n"
+        "Это разовая оплата, автопродления нет."
+    )
+    notified = False
+    if not paid.get("notify_sent"):
+        notified = notify_max(user_id, text)
+        if notified:
+            robokassa_store.mark_notify_sent(inv_id)
+    return {
+        "ok": True,
+        "already": False,
+        "chat_id": user_id,
+        "plan_key": plan_key,
+        "platform": "max",
+        "subscription_end": new_end,
+        "notified": notified,
+        "out_sum": out_sum,
+    }
+
+
 GRANTED_KEEP = 50
 
 
@@ -316,6 +444,7 @@ def _track_payment_succeeded(
     seed: Optional[dict],
     *,
     occurred_at: Any = None,
+    platform: str = "tg",
 ) -> bool:
     """Write payment_succeeded to analytics.sqlite3 (admin dashboard). Never raises."""
     try:
@@ -323,19 +452,22 @@ def _track_payment_succeeded(
 
         u = seed if isinstance(seed, dict) else {}
         store = AnalyticsStore(_data_dir() / "analytics.sqlite3")
+        properties = {
+            "payment_id": f"robokassa:{inv_id}",
+            "provider": "robokassa",
+            "plan": plan_key or "unknown",
+            "amount_kopecks": int(amount_kopecks),
+            "recurring": kind == "child",
+            "source": str(u.get("acquisition_source") or "unknown"),
+            "partner": str(u.get("partner_code") or ""),
+            "campaign": str(u.get("campaign_code") or ""),
+        }
+        if platform != "tg":
+            properties["platform"] = platform
         return store.track(
             "payment_succeeded",
             user_id=int(chat_id),
-            properties={
-                "payment_id": f"robokassa:{inv_id}",
-                "provider": "robokassa",
-                "plan": plan_key or "unknown",
-                "amount_kopecks": int(amount_kopecks),
-                "recurring": kind == "child",
-                "source": str(u.get("acquisition_source") or "unknown"),
-                "partner": str(u.get("partner_code") or ""),
-                "campaign": str(u.get("campaign_code") or ""),
-            },
+            properties=properties,
             occurred_at=occurred_at,
             dedupe_key=f"payment-success:robokassa:{inv_id}",
         )
@@ -438,6 +570,9 @@ def fulfill_invoice(inv_id: int, *, out_sum: Optional[str] = None) -> dict[str, 
     paid = robokassa_store.mark_paid(inv_id)
     if not paid:
         return {"ok": False, "error": "mark_paid failed", "inv_id": inv_id}
+
+    if str(paid.get("platform") or "tg") == "max":
+        return _fulfill_max(int(inv_id), paid, out_sum=out_sum)
 
     chat_id = int(paid["chat_id"])
     plan_key = str(paid.get("plan_key") or "")

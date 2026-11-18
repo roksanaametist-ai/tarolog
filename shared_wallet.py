@@ -194,6 +194,38 @@ def update(kind: str, user_id: int, seed: Optional[dict], changes: dict[str, Any
         return dict(wallet)
 
 
+def extend_subscription(
+    kind: str,
+    user_id: int,
+    seed: Optional[dict],
+    *,
+    days: int,
+    changes: Optional[dict[str, Any]] = None,
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """[049] Атомарно продлить безлимит на days дней (от конца текущей подписки, если она ещё идёт)."""
+    path = wallet_path()
+    now = now or datetime.now()
+    with _Lock(path):
+        data = _load(path)
+        wallet = _ensure(data, kind, user_id, seed)
+        start = now
+        raw = wallet.get("subscription_end")
+        if raw:
+            try:
+                end = datetime.strptime(str(raw), "%Y-%m-%d %H:%M:%S")
+                if end > now:
+                    start = end
+            except ValueError:
+                pass
+        wallet["subscription_end"] = (start + timedelta(days=int(days))).strftime("%Y-%m-%d %H:%M:%S")
+        for field, value in (changes or {}).items():
+            if field in WALLET_FIELDS and field != "subscription_end":
+                wallet[field] = value
+        _save(path, data)
+        return dict(wallet)
+
+
 def add_questions(kind: str, user_id: int, delta: int, seed: Optional[dict]) -> Optional[dict[str, Any]]:
     path = wallet_path()
     with _Lock(path):
